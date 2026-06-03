@@ -268,9 +268,10 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
     }
 
     # Kirim pesan awal
+    folder_name = meta.get('name') or folder_id
     embed = discord.Embed(
         title=f"⏳ Job `{job_id}` dimulai",
-        description=f"Folder: **{meta.get('name', folder_id)}**",
+        description=f"Folder: **{folder_name}**",
         color=discord.Color.yellow(),
     )
     embed.add_field(name="Status", value="Sedang antri / mulai...", inline=False)
@@ -285,6 +286,9 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
             while True:
                 await asyncio.sleep(5)
                 fresh = jobs.get(job_id) or {}
+                if not fresh:
+                    row = db_get_job(job_id)
+                    if row: fresh = dict(row)
                 status = fresh.get("status", "?")
                 try:
                     await first_msg.edit(embed=_make_job_embed(job_id, fresh))
@@ -294,10 +298,10 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
                     break
 
         updater = asyncio.create_task(_live_update())
-        # FIX: jalankan pipeline di executor agar tidak blokir event loop Discord
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, lambda: asyncio.run(run_pipeline(job_id, folder_url)))
-        updater.cancel()
+        try:
+            await run_pipeline(job_id, folder_url)
+        finally:
+            updater.cancel()
 
         # Tunggu sebentar agar DB sudah tersimpan sebelum notify
         await asyncio.sleep(2)
