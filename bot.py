@@ -104,7 +104,7 @@ def _make_job_embed(job_id: str, data: dict, color=None) -> discord.Embed:
             f"https://drive.google.com/drive/folders/{output_id}"
             if output_id else "—"
         )
-        embed.add_field(name="📁 Output Drive", value=folder_url, inline=False)
+        embed.add_field(name="📁 Output Drive", value=f"[Buka folder]({folder_url})", inline=False)
 
     if failed and failed != "[]":
         import json
@@ -129,8 +129,9 @@ async def _notify_done(channel: discord.TextChannel, job_id: str, mention: str):
     embed  = _make_job_embed(job_id, data)
 
     icon = "✅" if status == "completed" else "❌"
+    # Kirim sebagai pesan BARU agar mention benar-benar notif
     await channel.send(
-        content=f"{mention} {icon} Job `{job_id}` selesai dengan status **{status}**!",
+        content=f"{mention} {icon} Job `{job_id}` selesai — **{status.upper()}**!",
         embed=embed,
     )
 
@@ -298,6 +299,8 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
         await loop.run_in_executor(None, lambda: asyncio.run(run_pipeline(job_id, folder_url)))
         updater.cancel()
 
+        # Tunggu sebentar agar DB sudah tersimpan sebelum notify
+        await asyncio.sleep(2)
         try:
             await _notify_done(channel, job_id, user.mention)
         except Exception as e:
