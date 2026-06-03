@@ -41,6 +41,7 @@ INPAINT_CROP_PAD    = 180
 INPAINT_MIN_RATIO   = 0.005
 
 # Solid fill detection
-SOLID_FILL_STD_THRESHOLD = 20.0
+# Lebih toleran untuk bubble transparan/gradient
+SOLID_FILL_STD_THRESHOLD = 45.0
 
 # ── Credit & Job Rules ────────────────────────────────────

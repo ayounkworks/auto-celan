@@ -130,7 +130,7 @@ async def on_ready():
 
     init_db()
 
-    runpod_module.runpod_sem     = asyncio.Semaphore(8)
+    runpod_module.runpod_sem     = asyncio.Semaphore(10)
     pipeline_module._warmup_lock = asyncio.Lock()
     pipeline_module.pipeline_sem = asyncio.Semaphore(10)
     pipeline_module.vision_sem   = asyncio.Semaphore(5)
