@@ -24,7 +24,7 @@ from typing import Tuple
 
 # Minimum confidence score untuk dianggap "aman dihapus"
 # Semakin tinggi = semakin ketat perlindungan art
-ART_PROTECT_THRESHOLD = 2   # vote >= ini → lindungi
+ART_PROTECT_THRESHOLD = 3
 
 # Warna bubble yang umum di manga berwarna
 # (putih bersih, hitam solid, gradient hitam-putih)
@@ -222,7 +222,7 @@ def is_art_text(
 
     # ── Sinyal 1 (bobot 2): background dalam box sangat berwarna ──
     if _has_complex_colored_background(img_np, x1, y1, x2, y2):
-        score += 2
+        score += 1
 
     # ── Sinyal 2 (bobot 1): border sekitar box bukan bubble ──
     border_px = _sample_border(img_np, x1, y1, x2, y2, ART_BORDER_PAD)

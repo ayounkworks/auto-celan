@@ -278,8 +278,24 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
 
     # Jalankan pipeline di background, notify saat selesai
     async def _run_and_notify():
+        # Update embed tiap 5 detik selama proses berjalan
+        async def _live_update():
+            first_msg = await interaction.original_response()
+            while True:
+                await asyncio.sleep(5)
+                fresh = jobs.get(job_id) or {}
+                status = fresh.get("status", "?")
+                try:
+                    await first_msg.edit(embed=_make_job_embed(job_id, fresh))
+                except Exception:
+                    pass
+                if status in ("completed", "failed", "cancelled"):
+                    break
+
+        updater = asyncio.create_task(_live_update())
         await run_pipeline(job_id, folder_url)
-        # Setelah selesai, kirim notif ke channel yang sama
+        updater.cancel()
+
         try:
             await _notify_done(channel, job_id, user.mention)
         except Exception as e:
