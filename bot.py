@@ -293,7 +293,9 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
                     break
 
         updater = asyncio.create_task(_live_update())
-        await run_pipeline(job_id, folder_url)
+        # FIX: jalankan pipeline di executor agar tidak blokir event loop Discord
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: asyncio.run(run_pipeline(job_id, folder_url)))
         updater.cancel()
 
         try:
