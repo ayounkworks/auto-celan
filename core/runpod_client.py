@@ -33,14 +33,27 @@ POLL_MAX        = 120  # iterasi — 60 detik max polling
 # helpers
 # ============================================================
 
-def round_to_8(image, mask):
-    w, h = image.size
-    nw = max(8, (w // 8) * 8)
-    nh = max(8, (h // 8) * 8)
-    if (nw, nh) != (w, h):
-        image = image.resize((nw, nh), Image.Resampling.LANCZOS)
-        mask  = mask.resize((nw, nh), Image.Resampling.NEAREST)
-    return image, mask
+LAMA_MIN_SIZE = 128
+LAMA_MAX_AREA = 800 * 4096
+
+def _resize_for_lama(image, mask):
+    orig_w, orig_h = image.size
+    area = orig_w * orig_h
+    if area > LAMA_MAX_AREA:
+        scale = (LAMA_MAX_AREA / area) ** 0.5
+        tw = max(LAMA_MIN_SIZE, int(orig_w * scale // 8) * 8)
+        th = max(LAMA_MIN_SIZE, int(orig_h * scale // 8) * 8)
+        print(f"  [LaMa resize] {orig_w}×{orig_h} → {tw}×{th}")
+    else:
+        tw = max(LAMA_MIN_SIZE, (orig_w // 8) * 8)
+        th = max(LAMA_MIN_SIZE, (orig_h // 8) * 8)
+    if (tw, th) == (orig_w, orig_h):
+        return image, mask, orig_w, orig_h, False
+    return (
+        image.resize((tw, th), Image.Resampling.LANCZOS),
+        mask.resize((tw, th), Image.Resampling.NEAREST),
+        orig_w, orig_h, True,
+    )
 
 
 def normalize_b64(data: str):
@@ -119,8 +132,8 @@ async def _run_runsync(image, mask, label="", http_session=None) -> Optional[Ima
     mengembalikan output langsung dalam satu response.
     Lebih cepat karena tidak ada polling overhead.
     """
-    image, mask = round_to_8(image, mask)
-    payload     = _build_payload(image, mask)
+    img_send, mask_send, orig_w, orig_h, was_resized = _resize_for_lama(image, mask)
+    payload = _build_payload(img_send, mask_send)
     headers     = {
         "Authorization": f"Bearer {RUNPOD_API_KEY}",
         "Content-Type":  "application/json",
@@ -144,6 +157,8 @@ async def _run_runsync(image, mask, label="", http_session=None) -> Optional[Ima
         status = data.get("status")
         if status == "COMPLETED":
             img = await decode_image_async(data.get("output"), http_session=http_session)
+            if was_resized and img.size != (orig_w, orig_h):
+                img = img.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
             elapsed = time.time() - start
             if img is None:
                 print(f"[{label}] runsync: output tidak bisa di-decode ({elapsed:.2f}s)")
@@ -172,8 +187,8 @@ async def _run_runsync(image, mask, label="", http_session=None) -> Optional[Ima
 
 async def _run_poll(image, mask, label="", http_session=None) -> Optional[Image.Image]:
     """Fallback ke /run + polling /status jika runsync gagal."""
-    image, mask = round_to_8(image, mask)
-    payload     = _build_payload(image, mask)
+    img_send, mask_send, orig_w, orig_h, was_resized = _resize_for_lama(image, mask)
+    payload = _build_payload(img_send, mask_send)
     headers     = {
         "Authorization": f"Bearer {RUNPOD_API_KEY}",
         "Content-Type":  "application/json",
@@ -216,6 +231,8 @@ async def _run_poll(image, mask, label="", http_session=None) -> Optional[Image.
         status = sj.get("status")
         if status == "COMPLETED":
             img     = await decode_image_async(sj.get("output"), http_session=http_session)
+            if was_resized and img.size != (orig_w, orig_h):
+                img = img.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
             elapsed = time.time() - start
             if img is None:
                 print(f"[{label}] poll: output tidak bisa di-decode ({elapsed:.2f}s)")

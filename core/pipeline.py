@@ -97,9 +97,9 @@ async def warmup(job_id=None):
             import base64 as _b64
             from core.config import RUNPOD_API_KEY, RUNPOD_ENDPOINT_ID
 
-            # Buat gambar 8x8 pixel putih + mask hitam (sekecil mungkin)
-            tiny_img  = _Image.new("RGB", (8, 8), color=(255, 255, 255))
-            tiny_mask = _Image.new("L",   (8, 8), color=0)
+            # Buat gambar 128x128 pixel putih + mask hitam
+            tiny_img  = _Image.new("RGB", (128, 128), color=(255, 255, 255))
+            tiny_mask = _Image.new("L",   (128, 128), color=0)
 
             def _to_b64(img, fmt):
                 buf = _io.BytesIO()
