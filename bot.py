@@ -130,14 +130,11 @@ async def on_ready():
 
     init_db()
 
-    runpod_module.runpod_sem     = asyncio.Semaphore(10)
-    pipeline_module._warmup_lock = asyncio.Lock()
-    pipeline_module.pipeline_sem = asyncio.Semaphore(10)
-    pipeline_module.vision_sem   = asyncio.Semaphore(5)
-
-    timeout   = aiohttp.ClientTimeout(total=300, connect=20, sock_connect=20, sock_read=300)
+    # Hanya untuk warmup — pipeline buat session & semaphore sendiri di thread-nya
+    timeout   = aiohttp.ClientTimeout(total=300, connect=20, sock_read=300)
     connector = aiohttp.TCPConnector(limit=30, ttl_dns_cache=300, family=socket.AF_INET)
     pipeline_module._http_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+    pipeline_module._warmup_lock  = asyncio.Lock()
     pipeline_module.vision_client = vision.ImageAnnotatorClient(
         client_options={"api_key": GOOGLE_API_KEY}
     )
@@ -275,25 +272,24 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
             new_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(new_loop)
             try:
-                # Reuse http_session tidak bisa lintas loop, buat baru
                 import aiohttp, socket as _socket
-                connector = aiohttp.TCPConnector(
-                    limit=30, ttl_dns_cache=300, family=_socket.AF_INET,
-                    loop=new_loop,
-                )
-                timeout = aiohttp.ClientTimeout(total=300, connect=20, sock_read=300)
 
                 async def _inner():
-                    async with aiohttp.ClientSession(
-                        timeout=timeout, connector=connector
-                    ) as session:
+                    # Buat semua Semaphore di event loop ini agar tidak cross-loop error
+                    import core.runpod_client as rp
+                    import core.pipeline      as pl
+                    rp.runpod_sem     = asyncio.Semaphore(10)
+                    pl.pipeline_sem   = asyncio.Semaphore(10)
+                    pl.vision_sem     = asyncio.Semaphore(5)
+                    pl._warmup_lock   = asyncio.Lock()
+
+                    connector = aiohttp.TCPConnector(limit=30, ttl_dns_cache=300, family=_socket.AF_INET)
+                    timeout   = aiohttp.ClientTimeout(total=300, connect=20, sock_read=300)
+
+                    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
                         # Inject session baru ke pipeline module untuk thread ini
-                        old_session = pipeline_module._http_session
-                        pipeline_module._http_session = session
-                        try:
-                            await run_pipeline(job_id, folder_url)
-                        finally:
-                            pipeline_module._http_session = old_session
+                        pl._http_session = session
+                        await run_pipeline(job_id, folder_url)
 
                 new_loop.run_until_complete(_inner())
             finally:
