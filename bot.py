@@ -262,8 +262,44 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
                 break
 
     async def _run_pipeline():
-        """Jalankan pipeline sebagai task terpisah agar tidak blokir event loop."""
-        await run_pipeline(job_id, folder_url)
+        """
+        Jalankan pipeline di thread executor terpisah agar event loop
+        Discord tetap bebas kirim heartbeat ke gateway.
+        Tanpa ini, pipeline yang berat (Vision + numpy + RunPod) akan
+        memblokir event loop → ConnectionResetError gateway disconnect.
+        """
+        loop = asyncio.get_event_loop()
+
+        # Buat event loop baru di thread terpisah untuk pipeline async
+        def _run_in_thread():
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                # Reuse http_session tidak bisa lintas loop, buat baru
+                import aiohttp, socket as _socket
+                connector = aiohttp.TCPConnector(
+                    limit=30, ttl_dns_cache=300, family=_socket.AF_INET,
+                    loop=new_loop,
+                )
+                timeout = aiohttp.ClientTimeout(total=300, connect=20, sock_read=300)
+
+                async def _inner():
+                    async with aiohttp.ClientSession(
+                        timeout=timeout, connector=connector
+                    ) as session:
+                        # Inject session baru ke pipeline module untuk thread ini
+                        old_session = pipeline_module._http_session
+                        pipeline_module._http_session = session
+                        try:
+                            await run_pipeline(job_id, folder_url)
+                        finally:
+                            pipeline_module._http_session = old_session
+
+                new_loop.run_until_complete(_inner())
+            finally:
+                new_loop.close()
+
+        await loop.run_in_executor(None, _run_in_thread)
 
     async def _orchestrate():
         # FIX: pipeline dan live_update jalan PARALEL sebagai dua task terpisah
