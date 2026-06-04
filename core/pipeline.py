@@ -425,9 +425,9 @@ async def pipeline(job_id: str, folder_url: str):
                     failed.append(f["name"])
                     db_update_job(job_id, failed_files=json.dumps(failed))
                     db_mark_file_processed(job_id, f["name"], "failed", 0)
-                    db_increment_completed(job_id)
+                    completed = db_increment_completed(job_id)
                     if job_id in jobs:
-                        jobs[job_id]["completed_files"] = db_get_job(job_id)["completed_files"] or 0
+                        jobs[job_id]["completed_files"] = completed
                     return "failed"
 
                 return await process_image(
@@ -529,7 +529,9 @@ async def deletion_loop():
             for folder_id in db_get_pending_deletions():
                 success = await asyncio.to_thread(delete_folder, folder_id)
                 if success:
+                    db_remove_pending_deletion(folder_id)
                     print(f"Auto-deleted: {folder_id}")
-                db_remove_pending_deletion(folder_id)
+                else:
+                    print(f"Delete failed, will retry: {folder_id}")
         except Exception as e:
             print(f"Deletion loop error: {e}")
