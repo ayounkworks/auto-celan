@@ -24,9 +24,9 @@ from core.config import (
 
 runpod_sem: Optional[asyncio.Semaphore] = None
 
-RUNSYNC_TIMEOUT = 90   # detik — RunPod runsync max
+RUNSYNC_TIMEOUT = 55   # detik — RunPod runsync max
 POLL_INTERVAL   = 0.5  # detik — polling fallback
-POLL_MAX        = 120  # iterasi — 60 detik max polling
+POLL_MAX        = 160  # iterasi — 60 detik max polling
 
 
 # ============================================================
@@ -34,7 +34,7 @@ POLL_MAX        = 120  # iterasi — 60 detik max polling
 # ============================================================
 
 LAMA_MIN_SIZE = 128
-LAMA_MAX_AREA = 800 * 4096
+LAMA_MAX_AREA = 800 * 3000
 
 def _resize_for_lama(image, mask):
     orig_w, orig_h = image.size
@@ -265,9 +265,12 @@ async def run_runpod_lama(
         async with aiohttp.ClientSession() as session:
             return await run_runpod_lama(image, mask, label, session)
 
+    area = image.width * image.height
     async with (runpod_sem or asyncio.Lock()):
+        if area >= 800 * 4000:
+            print(f"  [{label}] gambar besar ({image.width}x{image.height}), pakai polling")
+            return await _run_poll(image, mask, label, http_session)
         result = await _run_runsync(image, mask, label, http_session)
         if result is not None:
             return result
-        # Fallback
         return await _run_poll(image, mask, label, http_session)
