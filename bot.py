@@ -8,6 +8,7 @@ import sys
 import socket
 import uuid
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import discord
 from discord import app_commands
@@ -122,15 +123,30 @@ intents = discord.Intents.default()
 bot     = discord.Client(intents=intents)
 tree    = app_commands.CommandTree(bot)
 
+# FIX Bug 3: Dedicated thread pool untuk pipeline — tidak berebut dengan Discord heartbeat
+_pipeline_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="pipeline")
+
+# FIX Bug 4: Semaphore global di level bot — max 2 job paralel di seluruh bot
+# Sebelumnya tiap /clean buat semaphorenya sendiri → tidak ada limit antar-job
+_global_job_sem: asyncio.Semaphore = None  # diinit setelah event loop siap di on_ready
+
 
 @bot.event
 async def on_ready():
+    global _global_job_sem
     await tree.sync()
     print(f"✅ Bot online: {bot.user} (ID: {bot.user.id})")
 
     init_db()
 
-    # Hanya untuk warmup — pipeline buat session & semaphore sendiri di thread-nya
+    # FIX Bug 4: Init global semaphore di event loop yang benar
+    if _global_job_sem is None:
+        _global_job_sem = asyncio.Semaphore(2)
+
+    # FIX Bug 1: Tutup session lama sebelum buat yang baru (cegah leak saat reconnect)
+    if pipeline_module._http_session and not pipeline_module._http_session.closed:
+        await pipeline_module._http_session.close()
+
     timeout   = aiohttp.ClientTimeout(total=300, connect=20, sock_read=300)
     connector = aiohttp.TCPConnector(limit=30, ttl_dns_cache=300, family=socket.AF_INET)
     pipeline_module._http_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
@@ -145,8 +161,9 @@ async def on_ready():
 
 @bot.event
 async def on_close():
-    if pipeline_module._http_session:
+    if pipeline_module._http_session and not pipeline_module._http_session.closed:
         await pipeline_module._http_session.close()
+    _pipeline_executor.shutdown(wait=False)
 
 
 # ── /help ─────────────────────────────────────────────────
@@ -260,12 +277,10 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
 
     async def _run_pipeline():
         """
-        Jalankan pipeline di thread executor terpisah agar event loop
-        Discord tetap bebas kirim heartbeat ke gateway.
-        Tanpa ini, pipeline yang berat (Vision + numpy + RunPod) akan
-        memblokir event loop → ConnectionResetError gateway disconnect.
+        Jalankan pipeline di dedicated thread executor (FIX Bug 3) agar thread pool
+        Discord tidak tersaturasi → heartbeat tetap jalan → tidak disconnect.
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         # Buat event loop baru di thread terpisah untuk pipeline async
         def _run_in_thread():
@@ -278,32 +293,39 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
                     # Buat semua Semaphore di event loop ini agar tidak cross-loop error
                     import core.runpod_client as rp
                     import core.pipeline      as pl
-                    rp.runpod_sem     = asyncio.Semaphore(10)
-                    pl.pipeline_sem   = asyncio.Semaphore(10)
-                    pl.vision_sem     = asyncio.Semaphore(5)
-                    pl._warmup_lock   = asyncio.Lock()
+                    rp.runpod_sem   = asyncio.Semaphore(10)
+                    pl.pipeline_sem = asyncio.Semaphore(10)
+                    pl.vision_sem   = asyncio.Semaphore(5)
+                    pl._warmup_lock = asyncio.Lock()
 
                     connector = aiohttp.TCPConnector(limit=30, ttl_dns_cache=300, family=_socket.AF_INET)
                     timeout   = aiohttp.ClientTimeout(total=300, connect=20, sock_read=300)
 
+                    # FIX Bug 1: async with → session pasti ditutup saat selesai, tidak leak
                     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-                        # Inject session baru ke pipeline module untuk thread ini
                         pl._http_session = session
                         await run_pipeline(job_id, folder_url)
+                    # Setelah context manager keluar, pl._http_session sudah closed
+                    # Reset ke None agar tidak ada kode lain yang pakai session stale
+                    pl._http_session = None
 
                 new_loop.run_until_complete(_inner())
             finally:
                 new_loop.close()
 
-        await loop.run_in_executor(None, _run_in_thread)
+        # FIX Bug 3: Gunakan _pipeline_executor (dedicated) bukan default executor
+        # Default executor berbagi dengan Discord heartbeat → bisa starvation
+        await loop.run_in_executor(_pipeline_executor, _run_in_thread)
 
     async def _orchestrate():
-        # FIX: pipeline dan live_update jalan PARALEL sebagai dua task terpisah
-        pipeline_task = asyncio.create_task(_run_pipeline())
-        updater_task  = asyncio.create_task(_live_update())
+        # FIX Bug 4: Tunggu slot global (max 2 job paralel di seluruh bot)
+        async with _global_job_sem:
+            # FIX: pipeline dan live_update jalan PARALEL sebagai dua task terpisah
+            pipeline_task = asyncio.create_task(_run_pipeline())
+            updater_task  = asyncio.create_task(_live_update())
 
-        # Tunggu pipeline selesai
-        await pipeline_task
+            # Tunggu pipeline selesai
+            await pipeline_task
 
         # Beri waktu DB tersimpan, lalu update embed final
         await asyncio.sleep(2)
