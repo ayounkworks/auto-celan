@@ -24,7 +24,7 @@ import numpy as np
 from PIL import Image, ImageFilter
 from google.cloud import vision
 
-from core.config import MAX_WIDTH, DRIVE_OUTPUT_FOLDER_ID
+from core.config import MAX_WIDTH, DRIVE_OUTPUT_FOLDER_ID, INPAINT_CROP_PAD
 from core.database import (
     db_get_job, db_update_job, db_append_log, db_mark_file_processed,
     db_get_processed_files, db_schedule_deletion, db_increment_completed,
@@ -292,27 +292,83 @@ async def process_image(
             has_mask = lama_mask.getbbox() is not None
 
             if has_mask:
-                # Coba solid fill dulu (tanpa RunPod) — cl=0, ct=0 karena ini full image
-                solid_result = await asyncio.to_thread(
-                    solid_fill_inpaint, prefilled, lama_mask, prefilled, 0, 0
-                )
+                # FIX: Split mask jadi band-band vertikal berdasarkan gap > 300px
+                # Lalu tiap band di-crop + inpaint sendiri → LaMa dapat patch kecil
+                # Jauh lebih akurat daripada kirim full 800x10898
+                iw, ih    = prefilled.size
+                mask_arr  = np.array(lama_mask)
+                final     = prefilled.copy()
 
-                if solid_result is not None:
-                    job_log(job_id, f"  {filename}: solid fill (no RunPod)")
-                    final = solid_result
-                else:
-                    raw_inpaint = await run_runpod_lama(
-                        prefilled, lama_mask,
-                        label=filename,
-                        http_session=_http_session,
+                # Cari baris yang ada mask
+                rows_with_mask = np.where(mask_arr.max(axis=1) > 0)[0]
+
+                # Split jadi bands berdasarkan gap vertikal > 300px
+                BAND_GAP = 300
+                bands    = []
+                if len(rows_with_mask) > 0:
+                    prev = int(rows_with_mask[0])
+                    band_start = prev
+                    for i in range(1, len(rows_with_mask)):
+                        cur = int(rows_with_mask[i])
+                        if cur - prev > BAND_GAP:
+                            bands.append((band_start, prev + 1))
+                            band_start = cur
+                        prev = cur
+                    bands.append((band_start, prev + 1))
+
+                job_log(job_id, f"  {filename}: {len(bands)} inpaint band(s) dari ({iw}x{ih})")
+
+                for band_y1, band_y2 in bands:
+                    # Crop band dari full image + mask
+                    band_img  = prefilled.crop((0, band_y1, iw, band_y2))
+                    band_mask = lama_mask.crop((0, band_y1, iw, band_y2))
+
+                    # Expand bbox dalam band dengan INPAINT_CROP_PAD
+                    bb = band_mask.getbbox()
+                    if bb is None:
+                        continue
+                    bh = band_y2 - band_y1
+                    cl = max(0,  bb[0] - INPAINT_CROP_PAD)
+                    ct = max(0,  bb[1] - INPAINT_CROP_PAD)
+                    cr = min(iw, bb[2] + INPAINT_CROP_PAD)
+                    cb = min(bh, bb[3] + INPAINT_CROP_PAD)
+
+                    img_crop  = band_img.crop((cl, ct, cr, cb))
+                    mask_crop = band_mask.crop((cl, ct, cr, cb))
+
+                    # Coba solid fill dulu (tanpa RunPod)
+                    solid_result = await asyncio.to_thread(
+                        solid_fill_inpaint, img_crop, mask_crop, img_crop, 0, 0
                     )
-                    inpaint = validate_inpaint(raw_inpaint, prefilled)
-                    if inpaint is not None:
-                        soft_mask = lama_mask.filter(ImageFilter.GaussianBlur(7))
-                        final     = prefilled.copy()
-                        final.paste(inpaint, (0, 0), soft_mask)
+
+                    if solid_result is not None:
+                        final.paste(solid_result, (cl, band_y1 + ct))
                     else:
-                        raise Exception("Inpaint result corrupt, file skipped")
+                        raw_inpaint = await run_runpod_lama(
+                            img_crop, mask_crop,
+                            label=f"{filename}@y{band_y1}",
+                            http_session=_http_session,
+                        )
+                        inpaint = validate_inpaint(raw_inpaint, img_crop)
+                        if inpaint is not None:
+                            # FIX Bug5: dark area → hard mask (blur=2), light → soft (blur=7)
+                            c_arr   = np.array(img_crop)
+                            m_arr   = np.array(mask_crop)
+                            masked  = c_arr[m_arr > 0]
+                            is_dark = masked.mean() < 80 if masked.size > 0 else False
+                            blur_r  = 2 if is_dark else 7
+                            soft_mc = mask_crop.filter(ImageFilter.GaussianBlur(blur_r))
+
+                            # Paste inpaint result ke posisi yang tepat di full image
+                            paste_x = cl
+                            paste_y = band_y1 + ct
+                            tmp     = final.copy()
+                            tmp.paste(inpaint, (paste_x, paste_y))
+                            full_sm = Image.new("L", prefilled.size, 0)
+                            full_sm.paste(soft_mc, (paste_x, paste_y))
+                            final.paste(tmp, (0, 0), full_sm)
+                        else:
+                            job_log(job_id, f"  {filename}@y{band_y1}: inpaint corrupt, skip band")
             else:
                 final = prefilled
 
