@@ -4,6 +4,7 @@
 # ============================================================
 
 import io
+import re
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageStat
 from typing import Optional, Tuple
@@ -119,7 +120,6 @@ def is_sfx(img_np: np.ndarray, x1: int, y1: int, x2: int, y2: int,
 
         if hangul_ratio > 0.5:
             # Cek repeating syllable pattern (SFX khas Korean)
-            import re as _re
             # Pattern: AB repeated (다르다르, 넝실넝실)
             half = len(t) // 2
             if half >= 1 and len(t) >= 2 and t[:half] == t[half:half*2]:
@@ -128,7 +128,7 @@ def is_sfx(img_np: np.ndarray, x1: int, y1: int, x2: int, y2: int,
             elif len(t) <= 4 and (box_w * box_h) / total_px < SFX_MIN_AREA_RATIO * 5:
                 score += 1
             # Dots/ellipsis only
-        if _re.fullmatch(r'[.…·・]+', t):
+        if re.fullmatch(r'[.…·・]+', t):
             score += 2
 
     return score >= SFX_VOTE_THRESHOLD
