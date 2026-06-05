@@ -48,6 +48,90 @@ _runpod_warmed = False
 
 # In-memory job state
 jobs           = {}
+
+# ── Slice height constants ─────────────────────────────────
+# Vision API bekerja optimal pada gambar < 2000px tinggi.
+# Webtoon strip bisa 10000-15000px → slice dulu, merge hasilnya.
+SLICE_HEIGHT   = 1500   # tinggi tiap slice (px)
+SLICE_OVERLAP  = 150    # overlap antar slice untuk cegah miss di batas
+
+def _detect_text_sliced(image: Image.Image, vc) -> list:
+    """
+    Kirim gambar ke Vision API dalam slice-slice vertikal.
+    Merge semua text_annotations dengan offset y yang benar.
+
+    Untuk gambar pendek (< SLICE_HEIGHT * 1.5) → kirim langsung tanpa slice.
+    Returns: list of _FakeAnnotation — duck-type compatible dengan Vision text_annotations
+             (punya .description dan .bounding_poly.vertices dengan .x/.y)
+    """
+    w, h = image.size
+
+    # Gambar cukup pendek → kirim langsung, kembalikan as-is
+    if h <= int(SLICE_HEIGHT * 1.5):
+        buf = to_bytes(image, "JPEG", 95)
+        buf.seek(0)
+        resp = vc.document_text_detection(image=vision.Image(content=buf.read()))
+        return list(resp.text_annotations)
+
+    # ── Lightweight wrapper agar tidak perlu rebuild protobuf objects ──
+    class _V:
+        __slots__ = ("x", "y")
+        def __init__(self, x, y): self.x = x; self.y = y
+
+    class _BP:
+        __slots__ = ("vertices",)
+        def __init__(self, verts): self.vertices = verts
+
+    class _Ann:
+        __slots__ = ("description", "bounding_poly")
+        def __init__(self, desc, bp): self.description = desc; self.bounding_poly = bp
+
+    all_annotations = []
+    seen_texts      = set()   # deduplicate teks di overlap zone
+
+    y = 0
+    while y < h:
+        y2        = min(y + SLICE_HEIGHT, h)
+        slice_img = image.crop((0, y, w, y2))
+
+        buf = to_bytes(slice_img, "JPEG", 95)
+        buf.seek(0)
+        try:
+            resp = vc.document_text_detection(image=vision.Image(content=buf.read()))
+        except Exception as e:
+            print(f"[slice_vision] Error at y={y}-{y2}: {e}")
+            if y2 >= h: break
+            y = y2 - SLICE_OVERLAP
+            continue
+
+        annotations = resp.text_annotations
+        if not annotations:
+            if y2 >= h: break
+            y = y2 - SLICE_OVERLAP
+            continue
+
+        for ann in annotations[1:]:   # skip index 0 (full-slice summary)
+            verts = ann.bounding_poly.vertices
+            xs    = [v.x       for v in verts]
+            ys    = [v.y + y   for v in verts]   # offset ke full-image coords
+
+            # Deduplicate di overlap zone — key: teks + posisi dibulatkan 15px
+            dedup_key = (ann.description, min(xs) // 15, min(ys) // 15)
+            if dedup_key in seen_texts:
+                continue
+            seen_texts.add(dedup_key)
+
+            new_ann = _Ann(
+                desc = ann.description,
+                bp   = _BP([_V(xs[i], ys[i]) for i in range(len(verts))])
+            )
+            all_annotations.append(new_ann)
+
+        if y2 >= h:
+            break
+        y = y2 - SLICE_OVERLAP
+
+    return all_annotations
 job_queue      = []
 cancelled_jobs = set()
 
@@ -184,12 +268,9 @@ async def process_image(
                         image = image.resize(
                             (MAX_WIDTH, int(image.height * ratio)), Image.LANCZOS
                         )
-                    buf = to_bytes(image, "JPEG", 95)
-                    buf.seek(0)
-                    response = vision_client.document_text_detection(
-                        image=vision.Image(content=buf.read())
-                    )
-                    return image, response.text_annotations
+                    # FIX: slice tall webtoon strips sebelum kirim ke Vision API
+                    texts = _detect_text_sliced(image, vision_client)
+                    return image, texts
 
                 img, texts = await asyncio.to_thread(resize_and_detect)
         else:
@@ -396,13 +477,10 @@ async def pipeline(job_id: str, folder_url: str):
                                 image = image.resize(
                                     (MAX_WIDTH, int(image.height * ratio)), Image.LANCZOS
                                 )
-                            buf = to_bytes(image, "JPEG", 95)
-                            buf.seek(0)
-                            response = vision_client.document_text_detection(
-                                image=vision.Image(content=buf.read())
-                            )
                             raw.close()
-                            return image, response.text_annotations
+                            # FIX: slice tall webtoon strips sebelum kirim ke Vision API
+                            texts = _detect_text_sliced(image, vision_client)
+                            return image, texts
 
                         return await asyncio.wait_for(
                             asyncio.to_thread(resize_and_detect),
