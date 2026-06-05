@@ -346,12 +346,18 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
                 print(f"[bot] Gagal kirim notif: {e}")
 
         except Exception:
-            print(f"[ORCHESTRATE FATAL] job={job_id}:\n{traceback.format_exc()}")
+            err_tb = traceback.format_exc()
+            print(f"[ORCHESTRATE FATAL] job={job_id}:\n{err_tb}")
             try:
                 jobs[job_id]["status"] = "failed"
                 msg  = await interaction.original_response()
                 row  = db_get_job(job_id)
                 data = dict(row) if row else jobs.get(job_id, {})
+                # Kirim error ke channel agar visible
+                short_err = err_tb.strip().split("\n")[-1][:200]
+                await channel.send(
+                    f"{user.mention} ❌ Job `{job_id}` fatal error:\n```{short_err}```"
+                )
                 await msg.edit(embed=_make_job_embed(job_id, data))
             except Exception:
                 pass
