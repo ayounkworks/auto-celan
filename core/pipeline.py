@@ -356,7 +356,7 @@ async def process_image(
                             m_arr   = np.array(mask_crop)
                             masked  = c_arr[m_arr > 0]
                             is_dark = masked.mean() < 80 if masked.size > 0 else False
-                            blur_r  = 2 if is_dark else 7
+                            blur_r  = 1 if is_dark else 4
                             soft_mc = mask_crop.filter(ImageFilter.GaussianBlur(blur_r))
 
                             # Paste inpaint result ke posisi yang tepat di full image

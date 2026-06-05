@@ -24,7 +24,7 @@ from typing import Tuple
 
 # Minimum confidence score untuk dianggap "aman dihapus"
 # Semakin tinggi = semakin ketat perlindungan art
-ART_PROTECT_THRESHOLD = 3
+ART_PROTECT_THRESHOLD = 4
 
 # Warna bubble yang umum di manga berwarna
 # (putih bersih, hitam solid, gradient hitam-putih)
@@ -46,7 +46,7 @@ ART_MIN_AREA_RATIO  = 0.0003
 # Gradient detection threshold
 # Bubble transparan/gradient biasanya punya transisi warna halus
 GRADIENT_STD_LOW    = 18.0   # terlalu polos = solid bubble
-GRADIENT_STD_HIGH   = 65.0   # terlalu kompleks = mungkin art
+GRADIENT_STD_HIGH   = 75.0   # terlalu kompleks = mungkin art
 
 
 # ── Helpers ───────────────────────────────────────────────
@@ -150,7 +150,7 @@ def _has_complex_colored_background(img_np: np.ndarray,
     color_diversity = (rg_diff + rb_diff) / 2
 
     # Background kompleks berwarna: std tinggi DAN ada variasi warna
-    return avg_std > 55.0 and color_diversity > 20.0
+    return avg_std > 70.0 and color_diversity > 30.0
 
 
 def _is_decorative_text(text_str: str) -> bool:
