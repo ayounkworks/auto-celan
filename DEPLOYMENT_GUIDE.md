@@ -18,7 +18,7 @@ git commit -m "initial"
 
 # Buat repo baru di github.com, lalu:
 git remote add origin https://github.com/USERNAME/auto-celan.git
-git push -u origin main
+git push -u origin master
 ```
 
 > ⚠️ .gitignore sudah exclude .env, token_drive.json, credentials.json
