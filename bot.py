@@ -8,7 +8,6 @@ import sys
 import socket
 import uuid
 import json
-import traceback
 from concurrent.futures import ThreadPoolExecutor
 
 import discord
@@ -129,7 +128,7 @@ _pipeline_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="pipel
 
 # FIX Bug 4: Semaphore global di level bot — max 2 job paralel di seluruh bot
 # Sebelumnya tiap /clean buat semaphorenya sendiri → tidak ada limit antar-job
-_global_job_sem: asyncio.Semaphore = None  # diinit setelah event loop siap di on_ready
+_global_job_sem: asyncio.Semaphore = None  # diinit di on_ready atau saat pertama dipakai
 
 
 @bot.event
@@ -311,9 +310,6 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
                     pl._http_session = None
 
                 new_loop.run_until_complete(_inner())
-            except Exception as _e:
-                print(f"[PIPELINE ERROR] job={job_id}\n{traceback.format_exc()}")
-                raise
             finally:
                 new_loop.close()
 
@@ -322,38 +318,43 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
         await loop.run_in_executor(_pipeline_executor, _run_in_thread)
 
     async def _orchestrate():
-        # FIX Bug 4: Tunggu slot global (max 2 job paralel di seluruh bot)
-        async with _global_job_sem:
-            # FIX: pipeline dan live_update jalan PARALEL sebagai dua task terpisah
-            pipeline_task = asyncio.create_task(_run_pipeline())
-            updater_task  = asyncio.create_task(_live_update())
+        try:
+            # FIX: guard kalau on_ready belum sempat init semaphore
+            global _global_job_sem
+            if _global_job_sem is None:
+                _global_job_sem = asyncio.Semaphore(2)
 
-            # Tunggu pipeline selesai
-            try:
+            async with _global_job_sem:
+                pipeline_task = asyncio.create_task(_run_pipeline())
+                updater_task  = asyncio.create_task(_live_update())
                 await pipeline_task
-            except Exception as _pe:
-                print(f"[ORCHESTRATE ERROR] job={job_id}: {traceback.format_exc()}")
-                raise
 
-        # Beri waktu DB tersimpan, lalu update embed final
-        await asyncio.sleep(2)
-        updater_task.cancel()
+            await asyncio.sleep(2)
+            updater_task.cancel()
 
-        # Render embed final sekali lagi dengan data lengkap
-        try:
-            msg   = await interaction.original_response()
-            row   = db_get_job(job_id)
-            final = dict(row) if row else jobs.get(job_id, {})
-            await msg.edit(embed=_make_job_embed(job_id, final))
-        except Exception as e:
-            print(f"[bot] Gagal update embed final: {e}")
+            try:
+                msg   = await interaction.original_response()
+                row   = db_get_job(job_id)
+                final = dict(row) if row else jobs.get(job_id, {})
+                await msg.edit(embed=_make_job_embed(job_id, final))
+            except Exception as e:
+                print(f"[bot] Gagal update embed final: {e}")
 
-        # Kirim mention + notif selesai
-        try:
-            await _notify_done(channel, job_id, user.mention)
-        except Exception as e:
-            print(f"[bot] Gagal kirim notif: {e}")
+            try:
+                await _notify_done(channel, job_id, user.mention)
+            except Exception as e:
+                print(f"[bot] Gagal kirim notif: {e}")
 
+        except Exception:
+            print(f"[ORCHESTRATE FATAL] job={job_id}:\n{traceback.format_exc()}")
+            try:
+                jobs[job_id]["status"] = "failed"
+                msg  = await interaction.original_response()
+                row  = db_get_job(job_id)
+                data = dict(row) if row else jobs.get(job_id, {})
+                await msg.edit(embed=_make_job_embed(job_id, data))
+            except Exception:
+                pass
     asyncio.create_task(_orchestrate())
 
 
