@@ -28,7 +28,7 @@ VARIANCE_THRESHOLD = 300
 # SFX filter thresholds
 DIALOG_BG_MAX_STD   = 55.0
 DIALOG_BG_LIGHT     = 165
-DIALOG_BG_DARK      = 70
+DIALOG_BG_DARK      = 35   # FIX Bug1: turun dari 70 → dark bubble (mean~20-50) tidak di-early-exit is_sfx
 SFX_MIN_AREA_RATIO  = 0.001
 
 # SFX voting

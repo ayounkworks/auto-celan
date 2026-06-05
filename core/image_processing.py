@@ -84,6 +84,8 @@ def is_sfx(img_np: np.ndarray, x1: int, y1: int, x2: int, y2: int,
 
         if mean_brightness >= DIALOG_BG_LIGHT:
             return False
+        # FIX Bug1: DIALOG_BG_DARK sekarang 35 (dari 70).
+        # Dark bubble solid (mean < 35) bukan SFX — return False langsung.
         if mean_brightness <= DIALOG_BG_DARK:
             return False
         if std_brightness <= DIALOG_BG_MAX_STD:

@@ -100,8 +100,10 @@ def _is_gradient_bubble(border_px: np.ndarray) -> Tuple[bool, float]:
     if mean > BUBBLE_WHITE_MIN and std < BUBBLE_GRAY_MAX_STD:
         return True, mean
 
-    # Bubble solid hitam
-    if mean < BUBBLE_BLACK_MAX and std < BUBBLE_GRAY_MAX_STD:
+    # FIX Bug1: Bubble solid hitam — hapus syarat std
+    # Dark bubble dengan teks putih di dalamnya punya std tinggi (kontras putih-hitam)
+    # tapi tetap harus dianggap bubble, bukan art
+    if mean < BUBBLE_BLACK_MAX:
         return True, mean
 
     # Bubble gradient (transparan ke hitam/putih)
@@ -219,6 +221,25 @@ def is_art_text(
         return False
 
     score = 0
+
+    # ── FIX Bug1: Dark bubble early-exit ──────────────────────────
+    # Kalau border sekitar box sangat gelap (mean < 50) → ini dark bubble
+    # Dark bubble tidak perlu voting — langsung aman dihapus (return False)
+    border_px_check = _sample_border(img_np, x1, y1, x2, y2, ART_BORDER_PAD)
+    if border_px_check.size > 0:
+        border_gray = border_px_check.mean(axis=1)
+        border_mean = float(border_gray.mean())
+        # Inside box: cek apakah dominan gelap (dark bubble interior)
+        pad = 4
+        ix1c = min(x1 + pad, x2 - 1)
+        iy1c = min(y1 + pad, y2 - 1)
+        ix2c = max(ix1c + 1, x2 - pad)
+        iy2c = max(iy1c + 1, y2 - pad)
+        interior = img_np[iy1c:iy2c, ix1c:ix2c]
+        interior_mean = float(interior.mean()) if interior.size > 0 else 128.0
+        # Dark bubble: interior gelap (< 80) ATAU border gelap (< 50)
+        if interior_mean < 80 or border_mean < 50:
+            return False  # dark bubble → jangan proteksi, biarkan dihapus
 
     # ── Sinyal 1 (bobot 2): background dalam box sangat berwarna ──
     if _has_complex_colored_background(img_np, x1, y1, x2, y2):
