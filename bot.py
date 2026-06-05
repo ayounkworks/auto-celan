@@ -8,6 +8,7 @@ import sys
 import socket
 import uuid
 import json
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 
 import discord
@@ -310,6 +311,9 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
                     pl._http_session = None
 
                 new_loop.run_until_complete(_inner())
+            except Exception as _e:
+                print(f"[PIPELINE ERROR] job={job_id}\n{traceback.format_exc()}")
+                raise
             finally:
                 new_loop.close()
 
@@ -325,7 +329,11 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
             updater_task  = asyncio.create_task(_live_update())
 
             # Tunggu pipeline selesai
-            await pipeline_task
+            try:
+                await pipeline_task
+            except Exception as _pe:
+                print(f"[ORCHESTRATE ERROR] job={job_id}: {traceback.format_exc()}")
+                raise
 
         # Beri waktu DB tersimpan, lalu update embed final
         await asyncio.sleep(2)
