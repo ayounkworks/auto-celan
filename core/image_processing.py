@@ -109,6 +109,28 @@ def is_sfx(img_np: np.ndarray, x1: int, y1: int, x2: int, y2: int,
         if katakana / len(t) > 0.7:
             score += 1
 
+        # FIX: Korean onomatopoeia / SFX detection
+        # Korean SFX tidak punya uppercase atau katakana — deteksi via pola:
+        # 1. Repeating syllable: 다르다르, 넝실넝실, 뿔뿔 → SFX
+        # 2. Short Korean text (≤4 syllable) di atas art background
+        # 3. Ellipsis/dots only: .... → SFX
+        hangul_chars = [c for c in t if '\uAC00' <= c <= '\uD7A3']
+        hangul_ratio = len(hangul_chars) / len(t) if len(t) > 0 else 0
+
+        if hangul_ratio > 0.5:
+            # Cek repeating syllable pattern (SFX khas Korean)
+            import re as _re
+            # Pattern: AB repeated (다르다르, 넝실넝실)
+            half = len(t) // 2
+            if half >= 1 and len(t) >= 2 and t[:half] == t[half:half*2]:
+                score += 2   # repeating = almost certainly SFX
+            # Short Korean (≤4 chars) dengan box kecil = SFX di atas art
+            elif len(t) <= 4 and (box_w * box_h) / total_px < SFX_MIN_AREA_RATIO * 5:
+                score += 1
+            # Dots/ellipsis only
+        if _re.fullmatch(r'[.…·・]+', t):
+            score += 2
+
     return score >= SFX_VOTE_THRESHOLD
 
 
@@ -294,6 +316,16 @@ def solid_fill_inpaint(
 
     if bg_std > SOLID_FILL_STD_THRESHOLD:
         return None
+
+    # FIX: Jangan solid-fill kalau area mask sendiri punya texture/gradient
+    # Bubble putih webtoon sering punya shadow/gradient di dalam
+    mask_interior = arr[mask_arr > 128] if mask_arr.sum() > 0 else np.array([])
+    if mask_interior.size > 0:
+        interior_std = float(mask_interior.std())
+        # Kalau interior punya variasi tinggi → ada konten (background art, gradient)
+        # → jangan solid fill, biarkan RunPod yang handle
+        if interior_std > 40:
+            return None
 
     avg_color = tuple(int(c) for c in bg_mean[:3])
     result    = prefilled.copy()

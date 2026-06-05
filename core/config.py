@@ -29,10 +29,10 @@ VARIANCE_THRESHOLD = 300
 DIALOG_BG_MAX_STD   = 55.0
 DIALOG_BG_LIGHT     = 165
 DIALOG_BG_DARK      = 35   # FIX Bug1: turun dari 70 → dark bubble (mean~20-50) tidak di-early-exit is_sfx
-SFX_MIN_AREA_RATIO  = 0.001
+SFX_MIN_AREA_RATIO  = 0.0003  # FIX: turun dari 0.001 → SFX kecil di atas art terdeteksi
 
 # SFX voting
-SFX_BOX_HEIGHT_MIN  = 70
+SFX_BOX_HEIGHT_MIN  = 40   # FIX: turun dari 70 → Korean SFX kotak kecil terdeteksi
 SFX_AREA_PER_CHAR   = 4000
 SFX_VOTE_THRESHOLD  = 2
 
@@ -42,6 +42,6 @@ INPAINT_MIN_RATIO   = 0.005
 
 # Solid fill detection
 # Lebih toleran untuk bubble transparan/gradient
-SOLID_FILL_STD_THRESHOLD = 45.0
+SOLID_FILL_STD_THRESHOLD = 28.0  # FIX: turun dari 45 → hanya fill area benar-benar solid
 
 # ── Credit & Job Rules ────────────────────────────────────
