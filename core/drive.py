@@ -80,10 +80,11 @@ def extract_folder_id(link):
     return link.split('/')[-1].split('?')[0]
 
 
-def create_output_folder(parent_id, prefix="Output"):
+def create_output_folder(parent_id, prefix="output"):
     if not parent_id:
         print("[WARNING] DRIVE_OUTPUT_FOLDER_ID tidak diset di .env, mencoba membuat di Root.")
-    ts   = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    # FIX: format output_YYYYMMDD_HHMMSS (timestamp compact, no input folder name)
+    ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
     name = f"{prefix}_{ts}"
     meta = {
         "name"    : name,

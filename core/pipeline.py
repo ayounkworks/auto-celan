@@ -474,8 +474,9 @@ async def pipeline(job_id: str, folder_url: str):
             return meta.get("name", folder_id)
 
         input_folder_name = await asyncio.to_thread(_get_folder_name)
+        # FIX: output folder = "output_YYYYMMDD_HHMMSS" (timestamp only, no input name)
         folder_name, output_folder_id = await asyncio.to_thread(
-            create_output_folder, DRIVE_OUTPUT_FOLDER_ID, input_folder_name
+            create_output_folder, DRIVE_OUTPUT_FOLDER_ID, "output"
         )
         local_output_dir = None  # None = upload ke Drive
 
