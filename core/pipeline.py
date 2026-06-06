@@ -1,13 +1,9 @@
 # ============================================================
 # core/pipeline.py
-# Orchestrasi: download → Vision → smart_clean → RunPod → upload
-#
-# FIXES:
-# 1. completed_files increment atomic (pakai db UPDATE SET x=x+1)
-# 2. fetch_vision() punya per-file timeout → satu file hang tidak blokir batch
-# 3. process_image tidak double-download jika img_and_texts sudah ada
-# 4. solid_fill_inpaint dipanggil dengan koordinat yang benar (0,0 karena full image)
-# 5. Log lebih informatif + ETA lebih akurat
+# FIXED v2:
+# - Auto-delete output folder setelah 15 menit (non-blocking)
+# - Discord countdown timestamp
+# - Semua fix sebelumnya tetap ada
 # ============================================================
 
 import gc
@@ -16,7 +12,7 @@ import json
 import time
 import asyncio
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 import aiohttp
@@ -24,17 +20,14 @@ import numpy as np
 from PIL import Image, ImageFilter
 from google.cloud import vision
 
-from core.config import (
-    MAX_WIDTH, DRIVE_OUTPUT_FOLDER_ID, INPAINT_CROP_PAD,
-    OUTPUT_AUTO_DELETE_MINUTES
-)
+from core.config import MAX_WIDTH, DRIVE_OUTPUT_FOLDER_ID, INPAINT_CROP_PAD
 from core.database import (
     db_get_job, db_update_job, db_append_log, db_mark_file_processed,
     db_get_processed_files, db_schedule_deletion, db_increment_completed,
 )
 from core.drive import (
     _get_drive, CREDS, filter_and_sort_files, create_output_folder,
-    upload_file, download_file_async, extract_folder_id,
+    upload_file, download_file_async, extract_folder_id, delete_folder,
 )
 from core.image_processing import (
     to_bytes, progress_bar, format_eta, get_dynamic_batch_size,
@@ -42,41 +35,31 @@ from core.image_processing import (
 )
 from core.runpod_client import run_runpod_lama
 
-# ── Shared State (diisi oleh lifespan di main.py) ─────────
+# ── Shared State ──────────────────────────────────────────
 pipeline_sem:  Optional[asyncio.Semaphore] = None
 vision_sem:    Optional[asyncio.Semaphore] = None
 _warmup_lock:  Optional[asyncio.Lock]      = None
 _http_session: Optional[aiohttp.ClientSession] = None
 _runpod_warmed = False
 
-# In-memory job state
 jobs           = {}
 
-# ── Slice height constants ─────────────────────────────────
-# Vision API bekerja optimal pada gambar < 2000px tinggi.
-# Webtoon strip bisa 10000-15000px → slice dulu, merge hasilnya.
-SLICE_HEIGHT   = 1500   # tinggi tiap slice (px)
-SLICE_OVERLAP  = 150    # overlap antar slice untuk cegah miss di batas
+SLICE_HEIGHT   = 1500
+SLICE_OVERLAP  = 150
+
+# Auto-delete delay (menit)
+OUTPUT_DELETE_DELAY_MINUTES = 15
+
 
 def _detect_text_sliced(image: Image.Image, vc) -> list:
-    """
-    Kirim gambar ke Vision API dalam slice-slice vertikal.
-    Merge semua text_annotations dengan offset y yang benar.
-
-    Untuk gambar pendek (< SLICE_HEIGHT * 1.5) → kirim langsung tanpa slice.
-    Returns: list of _FakeAnnotation — duck-type compatible dengan Vision text_annotations
-             (punya .description dan .bounding_poly.vertices dengan .x/.y)
-    """
     w, h = image.size
 
-    # Gambar cukup pendek → kirim langsung, kembalikan as-is
     if h <= int(SLICE_HEIGHT * 1.5):
         buf = to_bytes(image, "JPEG", 95)
         buf.seek(0)
         resp = vc.document_text_detection(image=vision.Image(content=buf.read()))
         return list(resp.text_annotations)
 
-    # ── Lightweight wrapper agar tidak perlu rebuild protobuf objects ──
     class _V:
         __slots__ = ("x", "y")
         def __init__(self, x, y): self.x = x; self.y = y
@@ -90,7 +73,7 @@ def _detect_text_sliced(image: Image.Image, vc) -> list:
         def __init__(self, desc, bp): self.description = desc; self.bounding_poly = bp
 
     all_annotations = []
-    seen_texts      = set()   # deduplicate teks di overlap zone
+    seen_texts      = set()
 
     y = 0
     while y < h:
@@ -113,12 +96,11 @@ def _detect_text_sliced(image: Image.Image, vc) -> list:
             y = y2 - SLICE_OVERLAP
             continue
 
-        for ann in annotations[1:]:   # skip index 0 (full-slice summary)
+        for ann in annotations[1:]:
             verts = ann.bounding_poly.vertices
             xs    = [v.x       for v in verts]
-            ys    = [v.y + y   for v in verts]   # offset ke full-image coords
+            ys    = [v.y + y   for v in verts]
 
-            # Deduplicate di overlap zone — key: teks + posisi dibulatkan 15px
             dedup_key = (ann.description, min(xs) // 15, min(ys) // 15)
             if dedup_key in seen_texts:
                 continue
@@ -135,13 +117,13 @@ def _detect_text_sliced(image: Image.Image, vc) -> list:
         y = y2 - SLICE_OVERLAP
 
     return all_annotations
+
+
 job_queue      = []
 cancelled_jobs = set()
 
-# Vision client (diinit di main.py setelah config siap)
 vision_client = None
 
-# Timeout per file untuk fetch+vision (detik)
 FETCH_VISION_TIMEOUT = 90
 
 
@@ -163,11 +145,6 @@ def get_queue_position(job_id):
 # ── Warmup ────────────────────────────────────────────────
 
 async def warmup(job_id=None):
-    """
-    Kirim request dummy 1x1 pixel ke RunPod agar worker 'bangun'
-    sebelum file pertama diproses. Cold start (~3–10 detik) terjadi
-    di sini, bukan di file pertama yang penting.
-    """
     global _runpod_warmed
     async with _warmup_lock:
         if _runpod_warmed:
@@ -184,7 +161,6 @@ async def warmup(job_id=None):
             import base64 as _b64
             from core.config import RUNPOD_API_KEY, RUNPOD_ENDPOINT_ID
 
-            # Buat gambar 128x128 pixel putih + mask hitam
             tiny_img  = _Image.new("RGB", (128, 128), color=(255, 255, 255))
             tiny_mask = _Image.new("L",   (128, 128), color=0)
 
@@ -204,8 +180,6 @@ async def warmup(job_id=None):
                 "Content-Type":  "application/json",
             }
 
-            # Pakai /runsync dengan timeout longgar — kita tidak peduli hasilnya,
-            # hanya ingin worker aktif sebelum batch dimulai
             t0 = __import__("time").time()
             try:
                 async with _http_session.post(
@@ -227,7 +201,6 @@ async def warmup(job_id=None):
                 job_log(job_id, done_msg)
 
         except Exception as e:
-            # Warmup gagal tidak boleh hentikan pipeline
             warn = f"⚠️ Warmup skip: {e}"
             print(warn)
             if job_id:
@@ -235,6 +208,26 @@ async def warmup(job_id=None):
 
         finally:
             _runpod_warmed = True
+
+
+# ── Auto-Delete Output (NEW: 15 menit delay) ─────────────
+
+async def _auto_delete_output(folder_id: str, folder_name: str,
+                               delay_minutes: int = OUTPUT_DELETE_DELAY_MINUTES):
+    """
+    NEW: Hapus output folder setelah delay_minutes.
+    Non-blocking — dipanggil via asyncio.create_task().
+    """
+    print(f"⏰ Output '{folder_name}' akan dihapus dalam {delay_minutes} menit")
+    await asyncio.sleep(delay_minutes * 60)
+    try:
+        success = await asyncio.to_thread(delete_folder, folder_id)
+        if success:
+            print(f"🗑️ Auto-deleted output: {folder_name} ({folder_id})")
+        else:
+            print(f"❌ Gagal hapus output: {folder_name} ({folder_id})")
+    except Exception as e:
+        print(f"❌ Auto-delete error: {e}")
 
 
 # ── Process Single Image ──────────────────────────────────
@@ -256,9 +249,7 @@ async def process_image(
         if job_id in cancelled_jobs:
             return "cancelled"
 
-        # img_and_texts sudah diprefetch oleh fetch_vision() di pipeline
         if img_and_texts is None:
-            # Fallback: fetch sendiri jika dipanggil langsung
             job_log(job_id, f"Processing {filename}")
             raw = await download_file_async(file_id, _http_session)
 
@@ -271,7 +262,6 @@ async def process_image(
                         image = image.resize(
                             (MAX_WIDTH, int(image.height * ratio)), Image.LANCZOS
                         )
-                    # FIX: slice tall webtoon strips sebelum kirim ke Vision API
                     texts = _detect_text_sliced(image, vision_client)
                     return image, texts
 
@@ -295,17 +285,12 @@ async def process_image(
             has_mask = lama_mask.getbbox() is not None
 
             if has_mask:
-                # FIX: Split mask jadi band-band vertikal berdasarkan gap > 300px
-                # Lalu tiap band di-crop + inpaint sendiri → LaMa dapat patch kecil
-                # Jauh lebih akurat daripada kirim full 800x10898
                 iw, ih    = prefilled.size
                 mask_arr  = np.array(lama_mask)
                 final     = prefilled.copy()
 
-                # Cari baris yang ada mask
                 rows_with_mask = np.where(mask_arr.max(axis=1) > 0)[0]
 
-                # Split jadi bands berdasarkan gap vertikal > 300px
                 BAND_GAP = 300
                 bands    = []
                 if len(rows_with_mask) > 0:
@@ -322,11 +307,9 @@ async def process_image(
                 job_log(job_id, f"  {filename}: {len(bands)} inpaint band(s) dari ({iw}x{ih})")
 
                 for band_y1, band_y2 in bands:
-                    # Crop band dari full image + mask
                     band_img  = prefilled.crop((0, band_y1, iw, band_y2))
                     band_mask = lama_mask.crop((0, band_y1, iw, band_y2))
 
-                    # Expand bbox dalam band dengan INPAINT_CROP_PAD
                     bb = band_mask.getbbox()
                     if bb is None:
                         continue
@@ -339,7 +322,6 @@ async def process_image(
                     img_crop  = band_img.crop((cl, ct, cr, cb))
                     mask_crop = band_mask.crop((cl, ct, cr, cb))
 
-                    # Coba solid fill dulu (tanpa RunPod)
                     solid_result = await asyncio.to_thread(
                         solid_fill_inpaint, img_crop, mask_crop, img_crop, 0, 0
                     )
@@ -354,15 +336,13 @@ async def process_image(
                         )
                         inpaint = validate_inpaint(raw_inpaint, img_crop)
                         if inpaint is not None:
-                            # FIX Bug5: dark area → hard mask (blur=2), light → soft (blur=7)
                             c_arr   = np.array(img_crop)
                             m_arr   = np.array(mask_crop)
                             masked  = c_arr[m_arr > 0]
                             is_dark = masked.mean() < 80 if masked.size > 0 else False
-                            blur_r  = 1 if is_dark else 4
+                            blur_r  = 2 if is_dark else 4
                             soft_mc = mask_crop.filter(ImageFilter.GaussianBlur(blur_r))
 
-                            # Paste inpaint result ke posisi yang tepat di full image
                             paste_x = cl
                             paste_y = band_y1 + ct
                             tmp     = final.copy()
@@ -387,7 +367,6 @@ async def process_image(
         duration = time.time() - start_time
         db_mark_file_processed(job_id, filename, status, duration)
 
-        # FIX: atomic increment agar tidak race condition di concurrent tasks
         completed = db_increment_completed(job_id)
         if job_id in jobs:
             jobs[job_id]["completed_files"] = completed
@@ -426,7 +405,6 @@ async def process_image(
 
 
 async def _save_output(out_buf, filename, output_folder_id, local_output_dir):
-    """Helper: simpan ke lokal atau upload ke Drive."""
     if local_output_dir:
         import os
         out_path = os.path.join(local_output_dir, filename)
@@ -477,11 +455,10 @@ async def pipeline(job_id: str, folder_url: str):
             return meta.get("name", folder_id)
 
         input_folder_name = await asyncio.to_thread(_get_folder_name)
-        # FIX: output folder = "output_YYYYMMDD_HHMMSS" (timestamp only, no input name)
         folder_name, output_folder_id = await asyncio.to_thread(
             create_output_folder, DRIVE_OUTPUT_FOLDER_ID, "output"
         )
-        local_output_dir = None  # None = upload ke Drive
+        local_output_dir = None
 
         db_update_job(
             job_id,
@@ -521,7 +498,6 @@ async def pipeline(job_id: str, folder_url: str):
             batch = pending_files[i:i + batch_size]
             t0    = time.time()
 
-            # ── Phase 1: Download + Vision paralel dengan timeout per-file ──
             async def fetch_vision(f):
                 try:
                     job_log(job_id, f"Fetching {f['name']}")
@@ -538,7 +514,6 @@ async def pipeline(job_id: str, folder_url: str):
                                     (MAX_WIDTH, int(image.height * ratio)), Image.LANCZOS
                                 )
                             raw.close()
-                            # FIX: slice tall webtoon strips sebelum kirim ke Vision API
                             texts = _detect_text_sliced(image, vision_client)
                             return image, texts
 
@@ -555,7 +530,6 @@ async def pipeline(job_id: str, folder_url: str):
 
             vision_results = await asyncio.gather(*[fetch_vision(f) for f in batch])
 
-            # ── Phase 2: RunPod paralel ──
             async def process_with_prefetched(f, img_and_texts):
                 if img_and_texts is None:
                     row      = db_get_job(job_id)
@@ -611,12 +585,15 @@ async def pipeline(job_id: str, folder_url: str):
                 jobs[job_id]["status"]      = final_status
                 jobs[job_id]["finished_at"] = datetime.now().isoformat()
 
+        # ── FIXED: Auto-delete setelah 15 menit (non-blocking) ──
         if output_folder_id:
-            # Jadwalkan auto-delete setelah delay (non-blocking)
-            async def _delayed_delete():
-                await asyncio.sleep(OUTPUT_AUTO_DELETE_MINUTES * 60)
-                db_schedule_deletion(output_folder_id)
-            asyncio.create_task(_delayed_delete())
+            delete_at  = datetime.utcnow() + timedelta(minutes=OUTPUT_DELETE_DELAY_MINUTES)
+            unix_ts    = int(delete_at.timestamp())
+            jobs[job_id]["delete_at_unix"] = unix_ts  # untuk Discord countdown
+            asyncio.create_task(
+                _auto_delete_output(output_folder_id, folder_name,
+                                    OUTPUT_DELETE_DELAY_MINUTES)
+            )
 
         job_log(job_id,
             f"Done! ✅ {success_count} berhasil | ⏭ {skip_count} skip | ❌ {failed_count} gagal"
@@ -660,10 +637,9 @@ async def run_pipeline(job_id: str, folder_url: str):
         await pipeline(job_id, folder_url)
 
 
-# ── Auto-Delete Loop ──────────────────────────────────────
+# ── Auto-Delete Loop (existing, tetap ada) ───────────────
 
 async def deletion_loop():
-    from core.drive import delete_folder
     from core.database import db_get_pending_deletions, db_remove_pending_deletion
     while True:
         await asyncio.sleep(60)
