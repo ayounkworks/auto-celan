@@ -8,6 +8,7 @@ import sys
 import socket
 import uuid
 import json
+import traceback
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
