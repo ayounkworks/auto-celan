@@ -62,76 +62,109 @@ def get_dynamic_batch_size(total_files: int) -> int:
 
 def is_sfx(img_np: np.ndarray, x1: int, y1: int, x2: int, y2: int,
            text_str: str = "") -> bool:
-    """Voting system: 4 sinyal ringan, >= SFX_VOTE_THRESHOLD → SFX → skip."""
-    box_w    = x2 - x1
-    box_h    = y2 - y1
-    total_px = img_np.shape[0] * img_np.shape[1]
-
-    if (box_w * box_h) / total_px < SFX_MIN_AREA_RATIO:
+    """Voting system: deteksi apakah teks merupakan SFX."""
+    t = (text_str or '').strip()
+    if not t:
         return False
 
-    margin_x = max(2, box_w // 5)
-    margin_y = max(2, box_h // 5)
-    ix1 = min(x1 + margin_x, x2 - 1)
-    iy1 = min(y1 + margin_y, y2 - 1)
-    ix2 = max(ix1 + 1, x2 - margin_x)
-    iy2 = max(iy1 + 1, y2 - margin_y)
+    roi = img_np[y1:y2, x1:x2]
+    if roi.size == 0:
+        return False
 
-    region = img_np[iy1:iy2, ix1:ix2]
-    if region.size > 0:
-        gray            = np.mean(region, axis=2) if region.ndim == 3 else region.astype(float)
-        mean_brightness = float(np.mean(gray))
-        std_brightness  = float(np.std(gray))
-
-        if mean_brightness >= DIALOG_BG_LIGHT:
-            return False
-        # FIX Bug1: DIALOG_BG_DARK sekarang 35 (dari 70).
-        # Dark bubble solid (mean < 35) bukan SFX — return False langsung.
-        if mean_brightness <= DIALOG_BG_DARK:
-            return False
-        if std_brightness <= DIALOG_BG_MAX_STD:
-            return False
+    h_img, w_img = img_np.shape[:2]
+    total_px = h_img * w_img
+    box_w = x2 - x1
+    box_h = y2 - y1
+    box_area = box_w * box_h
 
     score = 0
-    if (box_w * box_h) / total_px > SFX_MIN_AREA_RATIO * 3:
+
+    # ── Mean brightness background ──
+    mean_bg = float(roi.mean())
+    is_dark_bg = mean_bg < 80
+
+    # ── Sinyal 1: Teks pendek / single-char / onomatopoeia ──
+    # SFX Korea: 뚜근, 쫙, 시악, 콰직, 쿵, dll
+    if len(t) <= 6:
         score += 1
-    if box_h >= SFX_BOX_HEIGHT_MIN:
+    if len(t) <= 3:
+        score += 1  # Sangat pendek = lebih mungkin SFX
+
+    # ── Sinyal 2: Dots/ellipsis ──
+    if re.fullmatch(r'[.…·・]+', t):
+        score += 2
+
+    # ── Sinyal 3: Area kecil relatif ──
+    if box_area / total_px < SFX_MIN_AREA_RATIO * 3:
         score += 1
 
-    t          = text_str.strip().replace(" ", "").replace("\n", "")
-    char_count = len(t)
-    if char_count > 0:
-        area_per_char = (box_w * box_h) / char_count
-        if area_per_char > SFX_AREA_PER_CHAR:
-            score += 1
-        if t.isupper() and t.isalpha() and len(t) <= 8:
-            score += 1
-        katakana = sum(1 for c in t if '\u30A0' <= c <= '\u30FF')
-        if katakana / len(t) > 0.7:
-            score += 1
+    # ── Sinyal 4: Posisi di atas/pinggir (bukan di bubble) ──
+    x_center = (x1 + x2) / 2
+    y_center = (y1 + y2) / 2
+    in_margin = (
+        x_center < w_img * 0.2 or
+        x_center > w_img * 0.8 or
+        y_center < h_img * 0.1 or
+        y_center > h_img * 0.9
+    )
+    if in_margin:
+        score += 1
 
-        # FIX: Korean onomatopoeia / SFX detection
-        # Korean SFX tidak punya uppercase atau katakana — deteksi via pola:
-        # 1. Repeating syllable: 다르다르, 넝실넝실, 뿔뿔 → SFX
-        # 2. Short Korean text (≤4 syllable) di atas art background
-        # 3. Ellipsis/dots only: .... → SFX
-        hangul_chars = [c for c in t if '\uAC00' <= c <= '\uD7A3']
-        hangul_ratio = len(hangul_chars) / len(t) if len(t) > 0 else 0
+    # ── Sinyal 5: Korean SFX pattern ──
+    half = len(t) // 2
+    if half >= 1 and len(t) >= 2 and t[:half] == t[half:half*2]:
+        score += 2  # Repeating pattern = SFX
 
-        if hangul_ratio > 0.5:
-            # Cek repeating syllable pattern (SFX khas Korean)
-            # Pattern: AB repeated (다르다르, 넝실넝실)
-            half = len(t) // 2
-            if half >= 1 and len(t) >= 2 and t[:half] == t[half:half*2]:
-                score += 2   # repeating = almost certainly SFX
-            # Short Korean (≤4 chars) dengan box kecil = SFX di atas art
-            elif len(t) <= 4 and (box_w * box_h) / total_px < SFX_MIN_AREA_RATIO * 5:
-                score += 1
-            # Dots/ellipsis only
-        if re.fullmatch(r'[.…·・]+', t):
+    # ── Sinyal 6: Dark background SFX ──
+    if is_dark_bg:
+        # Cek apakah teks memiliki outline terang (SFX style)
+        bright_pixels = float((roi > 200).mean())
+        if bright_pixels > 0.1:
+            score += 1  # Ada highlight/outline terang = kemungkinan SFX
+
+    # ── Korean hangul check ──
+    hangul_chars = sum(1 for c in t if '\uAC00' <= c <= '\uD7A3')
+    hangul_ratio = hangul_chars / max(len(t), 1)
+
+    if hangul_ratio > 0.5:
+        half = len(t) // 2
+        if half >= 1 and len(t) >= 2 and t[:half] == t[half:half*2]:
             score += 2
+        elif len(t) <= 4 and box_area / total_px < SFX_MIN_AREA_RATIO * 5:
+            score += 1
 
     return score >= SFX_VOTE_THRESHOLD
+def _is_circular_or_spiky_bubble(img_np: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> bool:
+    """
+    Deteksi speech bubble yang bentuknya circular atau spiky/star.
+    Ciri khas manhwa Korea modern: dark circle dengan sunburst border,
+    atau spiky star bubble.
+    """
+    roi = img_np[y1:y2, x1:x2]
+    if roi.size == 0:
+        return False
+
+    roi_h, roi_w = roi.shape[:2]
+
+    # Cek rasio aspek mendekati square (circle-ish)
+    aspect_ratio = roi_w / max(roi_h, 1)
+    is_squarish = 0.6 < aspect_ratio < 1.7
+
+    # Cek interior vs border contrast
+    margin = max(5, min(roi_h, roi_w) // 8)
+    interior = roi[margin:roi_h-margin, margin:roi_w-margin]
+
+    if interior.size == 0:
+        return is_squarish
+
+    interior_mean = float(interior.mean())
+    full_mean = float(roi.mean())
+
+    # Interior jauh lebih terang dari border = bubble dengan border  
+    contrast = abs(interior_mean - full_mean)
+
+    return is_squarish and contrast > 15.0
+
 
 
 # ── Crop for Inpaint ──────────────────────────────────────
@@ -221,11 +254,14 @@ def smart_clean(
             sfx_count += 1
             continue
 
+        # Cek circular/spiky bubble - selalu inpaint
+        is_special_bubble = _is_circular_or_spiky_bubble(img_np, x1, y1, x2, y2)
+
         # ── Art Protection ────────────────────────────────
         # Cek apakah teks ini bagian dari art (kaos, sign, background)
         # yang tidak boleh dihapus. Dijalankan SETELAH filter SFX
         # agar SFX sudah ter-skip duluan.
-        if is_art_text(img_np, x1, y1, x2, y2, text_str):
+        if not is_special_bubble and is_art_text(img_np, x1, y1, x2, y2, text_str):
             continue  # lindungi — jangan masukkan ke mask
 
         dialog_count += 1

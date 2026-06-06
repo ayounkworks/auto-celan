@@ -24,7 +24,10 @@ import numpy as np
 from PIL import Image, ImageFilter
 from google.cloud import vision
 
-from core.config import MAX_WIDTH, DRIVE_OUTPUT_FOLDER_ID, INPAINT_CROP_PAD
+from core.config import (
+    MAX_WIDTH, DRIVE_OUTPUT_FOLDER_ID, INPAINT_CROP_PAD,
+    OUTPUT_AUTO_DELETE_MINUTES
+)
 from core.database import (
     db_get_job, db_update_job, db_append_log, db_mark_file_processed,
     db_get_processed_files, db_schedule_deletion, db_increment_completed,
@@ -609,7 +612,11 @@ async def pipeline(job_id: str, folder_url: str):
                 jobs[job_id]["finished_at"] = datetime.now().isoformat()
 
         if output_folder_id:
-            db_schedule_deletion(output_folder_id)
+            # Jadwalkan auto-delete setelah delay (non-blocking)
+            async def _delayed_delete():
+                await asyncio.sleep(OUTPUT_AUTO_DELETE_MINUTES * 60)
+                db_schedule_deletion(output_folder_id)
+            asyncio.create_task(_delayed_delete())
 
         job_log(job_id,
             f"Done! ✅ {success_count} berhasil | ⏭ {skip_count} skip | ❌ {failed_count} gagal"

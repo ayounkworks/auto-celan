@@ -46,7 +46,7 @@ ART_MIN_AREA_RATIO  = 0.0003
 # Gradient detection threshold
 # Bubble transparan/gradient biasanya punya transisi warna halus
 GRADIENT_STD_LOW    = 18.0   # terlalu polos = solid bubble
-GRADIENT_STD_HIGH   = 75.0   # terlalu kompleks = mungkin art
+GRADIENT_STD_HIGH   = 72.0   # lebih toleran untuk gradient bubble
 
 
 # ── Helpers ───────────────────────────────────────────────
@@ -114,43 +114,86 @@ def _is_gradient_bubble(border_px: np.ndarray) -> Tuple[bool, float]:
     return False, mean
 
 
-def _has_complex_colored_background(img_np: np.ndarray,
-                                    x1: int, y1: int,
-                                    x2: int, y2: int) -> bool:
+def _has_complex_colored_background(img_np: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> bool:
     """
     Cek apakah area di dalam bounding box punya background
     yang kompleks dan berwarna — sinyal kuat bahwa ini art, bukan bubble.
     """
-    h, w   = img_np.shape[:2]
-    pad    = 4
-    ix1    = min(x1 + pad, x2 - 1)
-    iy1    = min(y1 + pad, y2 - 1)
-    ix2    = max(ix1 + 1, x2 - pad)
-    iy2    = max(iy1 + 1, y2 - pad)
-
-    region = img_np[iy1:iy2, ix1:ix2]
-    if region.size == 0:
+    roi = img_np[y1:y2, x1:x2]
+    if roi.size == 0:
         return False
+    
+    # Cek mean brightness dulu - kalau gelap sekali (dark bubble), 
+    # jangan langsung dianggap complex art background
+    mean_brightness = float(roi.mean())
+    
+    stds = roi.std(axis=(0,1))
+    avg_std = float(stds.mean())
+    color_diversity = float(stds.max() - stds.min())
+    
+    # Dark circular bubble memiliki mean rendah tapi std juga rendah
+    # (background gelap solid dengan teks putih)
+    # → threshold lebih ketat
+    if mean_brightness < 80:
+        # Dark region: perlu std SANGAT tinggi untuk dianggap art
+        return avg_std > 85.0 and color_diversity > 40.0
+    
+    # Normal: naik threshold dari 55→70 dan 20→28
+    return avg_std > 70.0 and color_diversity > 28.0
 
-    # Pisahkan channel R, G, B
-    r_std = float(np.std(region[:, :, 0]))
-    g_std = float(np.std(region[:, :, 1]))
-    b_std = float(np.std(region[:, :, 2]))
 
-    # Variance per channel tinggi = background kompleks/berwarna
-    avg_std = (r_std + g_std + b_std) / 3
+def _is_dark_bubble_region(img_np: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> bool:
+    """
+    Deteksi apakah ini region dark circular bubble (seperti di manhwa Korea).
+    Dark bubble = background gelap (#000-#333) dengan teks putih/terang di tengah.
+    BUKAN art - ini dialog/caption bubble tipe gelap.
+    """
+    roi = img_np[y1:y2, x1:x2]
+    if roi.size == 0:
+        return False
+    
+    mean_val = float(roi.mean())
+    # Background gelap
+    if mean_val > 120:
+        return False
+    
+    # Cek apakah ada pixels terang di tengah (teks putih)
+    roi_h, roi_w = roi.shape[:2]
+    center = roi[roi_h//4:3*roi_h//4, roi_w//4:3*roi_w//4]
+    if center.size == 0:
+        return False
+    
+    bright_ratio = float((center > 180).mean())
+    # Ada teks putih di tengah dark background = dark bubble
+    return bright_ratio > 0.05
 
-    # Juga cek apakah warna beragam (bukan grayscale)
-    rg_diff = float(np.mean(np.abs(
-        region[:, :, 0].astype(float) - region[:, :, 1].astype(float)
-    )))
-    rb_diff = float(np.mean(np.abs(
-        region[:, :, 0].astype(float) - region[:, :, 2].astype(float)
-    )))
-    color_diversity = (rg_diff + rb_diff) / 2
 
-    # Background kompleks berwarna: std tinggi DAN ada variasi warna
-    return avg_std > 70.0 and color_diversity > 30.0
+def _is_ornate_frame_bubble(img_np: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> bool:
+    """
+    Deteksi bubble dengan ornate/decorative frame (pink/gold border).
+    Ciri: interior sangat putih, border berwarna di tepi.
+    Ini tetap harus dihapus (dialog bubble, bukan art).
+    """
+    roi = img_np[y1:y2, x1:x2]
+    if roi.size == 0:
+        return False
+    
+    roi_h, roi_w = roi.shape[:2]
+    if roi_h < 40 or roi_w < 40:
+        return False
+    
+    # Interior (80% tengah) harus sangat putih
+    margin_y = roi_h // 8
+    margin_x = roi_w // 8
+    interior = roi[margin_y:roi_h-margin_y, margin_x:roi_w-margin_x]
+    
+    if interior.size == 0:
+        return False
+    
+    interior_white = float((interior > 235).all(axis=2).mean())
+    
+    # Interior putih ≥ 70% = ornate frame bubble
+    return interior_white > 0.70
 
 
 def _is_decorative_text(text_str: str) -> bool:
@@ -202,10 +245,11 @@ def is_art_text(
     Sistem voting untuk deteksi apakah teks ini bagian dari art.
 
     Scoring:
-      +2 → background dalam bounding box kompleks berwarna (sinyal kuat)
+      +1 → background dalam bounding box kompleks berwarna
       +1 → border sekitar teks BUKAN bubble (tidak putih/hitam/gradient)
       +1 → teks dekoratif (angka pendek, karakter tunggal)
       +1 → aspect ratio aneh untuk dialog
+      +2 → teks sangat besar (kemungkinan judul/art decoration)
       +1 → area sangat kecil di background kompleks
 
     Total >= ART_PROTECT_THRESHOLD → lindungi (return True)
@@ -222,28 +266,26 @@ def is_art_text(
 
     score = 0
 
-    # ── FIX Bug1: Dark bubble early-exit ──────────────────────────
-    # Kalau border sekitar box sangat gelap (mean < 50) → ini dark bubble
-    # Dark bubble tidak perlu voting — langsung aman dihapus (return False)
-    border_px_check = _sample_border(img_np, x1, y1, x2, y2, ART_BORDER_PAD)
-    if border_px_check.size > 0:
-        border_gray = border_px_check.mean(axis=1)
-        border_mean = float(border_gray.mean())
-        # Inside box: cek apakah dominan gelap (dark bubble interior)
-        pad = 4
-        ix1c = min(x1 + pad, x2 - 1)
-        iy1c = min(y1 + pad, y2 - 1)
-        ix2c = max(ix1c + 1, x2 - pad)
-        iy2c = max(iy1c + 1, y2 - pad)
-        interior = img_np[iy1c:iy2c, ix1c:ix2c]
-        interior_mean = float(interior.mean()) if interior.size > 0 else 128.0
-        # Dark bubble: interior gelap (< 80) ATAU border gelap (< 50)
-        if interior_mean < 80 or border_mean < 50:
-            return False  # dark bubble → jangan proteksi, biarkan dihapus
+    # ── Early exit: jelas bukan art ──
 
-    # ── Sinyal 1 (bobot 2): background dalam box sangat berwarna ──
+    # 1. Dark bubble (manhwa dark circular dialog)
+    if _is_dark_bubble_region(img_np, x1, y1, x2, y2):
+        return False  # Ini dialog, bukan art
+
+    # 2. Ornate frame bubble (interior putih dengan fancy border)
+    if _is_ornate_frame_bubble(img_np, x1, y1, x2, y2):
+        return False  # Ini dialog bubble, bukan art
+
+    # 3. Teks di area pinggir (side panel) dengan background complex
+    #    Kemungkinan besar dialog panel, bukan art text
+    img_w = img_np.shape[1]
+    is_side_text = (x2 < img_w * 0.30) or (x1 > img_w * 0.70)
+
+    # ── Sinyal 1: background dalam box sangat berwarna ──
     if _has_complex_colored_background(img_np, x1, y1, x2, y2):
-        score += 1
+        # Guard: kalau ini dark bubble atau side panel, jangan tambah score
+        if not _is_dark_bubble_region(img_np, x1, y1, x2, y2) and not is_side_text:
+            score += 1
 
     # ── Sinyal 2 (bobot 1): border sekitar box bukan bubble ──
     border_px = _sample_border(img_np, x1, y1, x2, y2, ART_BORDER_PAD)
@@ -259,6 +301,10 @@ def is_art_text(
     # ── Sinyal 4 (bobot 1): aspect ratio tidak wajar untuk dialog ──
     if not _aspect_ratio_ok(box_w, box_h):
         score += 1
+
+    # ── Sinyal baru: teks sangat besar = kemungkinan art title/decoration ──
+    if box_area / total_px > 0.06:  # > 6% area gambar
+        score += 2  # Kemungkinan besar title/judul dekoratif
 
     # ── Sinyal 5 (bobot 1): area kecil di tengah background kompleks ──
     # Teks kecil yang nempel di art (kaos, sign kecil)

@@ -43,5 +43,6 @@ INPAINT_MIN_RATIO   = 0.005
 # Solid fill detection
 # Lebih toleran untuk bubble transparan/gradient
 SOLID_FILL_STD_THRESHOLD = 28.0  # FIX: turun dari 45 → hanya fill area benar-benar solid
+OUTPUT_AUTO_DELETE_MINUTES = 15  # Hapus output setelah 15 menit
 
 # ── Credit & Job Rules ────────────────────────────────────
