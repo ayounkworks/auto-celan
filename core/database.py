@@ -1,9 +1,7 @@
 # ============================================================
 # core/database.py
-# SQLite helpers: init, user/credit, job tracking
-#
-# FIX: tambah db_increment_completed() — UPDATE atomic
-#      untuk cegah race condition di concurrent tasks
+# FIXED: tambah db_increment_completed() — UPDATE atomic
+#        tambah db_remove_pending_deletion() yang hilang dari import
 # ============================================================
 
 import sqlite3
@@ -188,10 +186,7 @@ def db_update_job(job_id, **kwargs):
 
 
 def db_increment_completed(job_id) -> int:
-    """
-    FIX: Atomic increment di SQL agar tidak race condition.
-    Returns nilai completed_files setelah increment.
-    """
+    """Atomic increment — cegah race condition di concurrent tasks."""
     conn = get_db()
     conn.execute(
         "UPDATE jobs SET completed_files = completed_files + 1 WHERE job_id = ?",
@@ -243,6 +238,10 @@ def db_get_processed_files(job_id):
 
 
 def db_schedule_deletion(folder_id):
+    """
+    Jadwalkan penghapusan folder setelah 15 menit.
+    deletion_loop() di main bot event loop yang akan eksekusi.
+    """
     delete_at = (datetime.now() + timedelta(minutes=15)).isoformat()
     conn      = get_db()
     conn.execute(
@@ -253,6 +252,7 @@ def db_schedule_deletion(folder_id):
 
 
 def db_get_pending_deletions():
+    """Ambil folder yang sudah waktunya dihapus."""
     rows = get_db().execute(
         "SELECT folder_id FROM pending_deletions WHERE delete_at <= ?",
         (datetime.now().isoformat(),)

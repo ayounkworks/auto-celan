@@ -1,9 +1,13 @@
 # ============================================================
 # core/pipeline.py
-# FIXED v3:
-# - BUG3: Closure bug di fetch_vision & process_with_prefetched
-# - BUG5: Hapus input_folder_name yang tidak terpakai (waste API call)
-# - BUG7: Batasi jobs[job_id]["log"] ke 100 entry
+# FIXED v4:
+# - BUG_AUTODELETE: asyncio.create_task di loop yang salah
+#   Pipeline jalan di loop baru (thread), auto-delete harus
+#   dijadwalkan di main bot loop via schedule_folder_delete()
+# - BUG3: Closure bug fetch_vision (default arg)
+# - BUG5: Hapus input_folder_name tidak terpakai
+# - BUG7: Limit log 100 entry
+# - INPAINT: Tambah db_schedule_deletion sebagai backup delete
 # ============================================================
 
 import gc
@@ -24,6 +28,7 @@ from core.config import MAX_WIDTH, DRIVE_OUTPUT_FOLDER_ID, INPAINT_CROP_PAD
 from core.database import (
     db_get_job, db_update_job, db_append_log, db_mark_file_processed,
     db_get_processed_files, db_schedule_deletion, db_increment_completed,
+    db_remove_pending_deletion,
 )
 from core.drive import (
     _get_drive, CREDS, filter_and_sort_files, create_output_folder,
@@ -48,6 +53,8 @@ SLICE_HEIGHT   = 1500
 SLICE_OVERLAP  = 150
 
 OUTPUT_DELETE_DELAY_MINUTES = 15
+
+LOG_MAX_ENTRIES = 100
 
 
 def _detect_text_sliced(image: Image.Image, vc) -> list:
@@ -124,9 +131,6 @@ vision_client  = None
 
 FETCH_VISION_TIMEOUT = 90
 
-# ── FIXED BUG7: Limit log entries ────────────────────────
-LOG_MAX_ENTRIES = 100
-
 
 def job_log(job_id, message):
     print(message)
@@ -135,7 +139,6 @@ def job_log(job_id, message):
         jobs[job_id]["progress"] = message
         log = jobs[job_id]["log"]
         log.append(message)
-        # FIXED BUG7: trim log agar tidak grow tanpa batas
         if len(log) > LOG_MAX_ENTRIES:
             jobs[job_id]["log"] = log[-LOG_MAX_ENTRIES:]
 
@@ -215,15 +218,20 @@ async def warmup(job_id=None):
             _runpod_warmed = True
 
 
-# ── Auto-Delete Output ────────────────────────────────────
+# ── Auto-Delete ───────────────────────────────────────────
 
 async def _auto_delete_output(folder_id: str, folder_name: str,
                                delay_minutes: int = OUTPUT_DELETE_DELAY_MINUTES):
+    """
+    Hapus output folder setelah delay_minutes.
+    Dipanggil dari deletion_loop() di main bot event loop.
+    """
     print(f"⏰ Output '{folder_name}' akan dihapus dalam {delay_minutes} menit")
     await asyncio.sleep(delay_minutes * 60)
     try:
         success = await asyncio.to_thread(delete_folder, folder_id)
         if success:
+            db_remove_pending_deletion(folder_id)
             print(f"🗑️ Auto-deleted output: {folder_name} ({folder_id})")
         else:
             print(f"❌ Gagal hapus output: {folder_name} ({folder_id})")
@@ -328,6 +336,7 @@ async def process_image(
                     )
 
                     if solid_result is not None:
+                        job_log(job_id, f"    {filename}: solid fill (no RunPod)")
                         final.paste(solid_result, (cl, band_y1 + ct))
                     else:
                         raw_inpaint = await run_runpod_lama(
@@ -451,8 +460,6 @@ async def pipeline(job_id: str, folder_url: str):
 
         import os
 
-        # FIXED BUG5: Hapus _get_folder_name() yang tidak terpakai
-        # (sebelumnya waste 1 API call ke Drive per job)
         folder_name, output_folder_id = await asyncio.to_thread(
             create_output_folder, DRIVE_OUTPUT_FOLDER_ID, "output"
         )
@@ -496,7 +503,6 @@ async def pipeline(job_id: str, folder_url: str):
             batch = pending_files[i:i + batch_size]
             t0    = time.time()
 
-            # FIXED BUG3: Closure bug — gunakan default argument untuk capture f
             async def fetch_vision(f, _f=None):
                 f = _f if _f is not None else f
                 try:
@@ -528,12 +534,10 @@ async def pipeline(job_id: str, folder_url: str):
                     job_log(job_id, f"  Vision error {f['name']}: {e}")
                     return None
 
-            # FIXED BUG3: Pass f sebagai default argument
             vision_results = await asyncio.gather(*[fetch_vision(f, _f=f) for f in batch])
 
-            # FIXED BUG3: Closure bug — gunakan default argument untuk capture f dan vr
             async def process_with_prefetched(f, img_and_texts, _f=None, _vr=None):
-                f            = _f if _f is not None else f
+                f             = _f if _f is not None else f
                 img_and_texts = _vr if _vr is not None else img_and_texts
 
                 if img_and_texts is None:
@@ -574,9 +578,6 @@ async def pipeline(job_id: str, folder_url: str):
                     jobs[job_id]["eta"] = format_eta(eta_seconds)
 
         # ── Finalize ──
-        row_final    = db_get_job(job_id)
-        failed_files = json.loads(row_final["failed_files"] or "[]")
-
         current_status = db_get_job(job_id)["status"]
         if current_status not in ("cancelled",):
             all_failed   = (failed_count > 0 and success_count == 0 and skip_count == 0)
@@ -590,14 +591,13 @@ async def pipeline(job_id: str, folder_url: str):
                 jobs[job_id]["status"]      = final_status
                 jobs[job_id]["finished_at"] = datetime.now().isoformat()
 
+        # ── FIXED AUTO-DELETE: Simpan ke DB, deletion_loop di main bot loop yang eksekusi ──
         if output_folder_id:
+            db_schedule_deletion(output_folder_id)
             delete_at = datetime.utcnow() + timedelta(minutes=OUTPUT_DELETE_DELAY_MINUTES)
             unix_ts   = int(delete_at.timestamp())
-            jobs[job_id]["delete_at_unix"] = unix_ts
-            asyncio.create_task(
-                _auto_delete_output(output_folder_id, folder_name,
-                                    OUTPUT_DELETE_DELAY_MINUTES)
-            )
+            if job_id in jobs:
+                jobs[job_id]["delete_at_unix"] = unix_ts
 
         job_log(job_id,
             f"Done! ✅ {success_count} berhasil | ⏭ {skip_count} skip | ❌ {failed_count} gagal"
@@ -641,18 +641,20 @@ async def run_pipeline(job_id: str, folder_url: str):
         await pipeline(job_id, folder_url)
 
 
-# ── Auto-Delete Loop ──────────────────────────────────────
+# ── Auto-Delete Loop (jalan di main bot event loop) ───────
+# FIXED: deletion_loop berjalan di event loop bot (main),
+# bukan di thread pipeline. Ini yang memastikan delete terjadi.
 
 async def deletion_loop():
     from core.database import db_get_pending_deletions, db_remove_pending_deletion
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(60)  # cek setiap menit
         try:
             for folder_id in db_get_pending_deletions():
                 success = await asyncio.to_thread(delete_folder, folder_id)
                 if success:
                     db_remove_pending_deletion(folder_id)
-                    print(f"Auto-deleted: {folder_id}")
+                    print(f"🗑️ Auto-deleted: {folder_id}")
                 else:
                     print(f"Delete failed, will retry: {folder_id}")
         except Exception as e:
