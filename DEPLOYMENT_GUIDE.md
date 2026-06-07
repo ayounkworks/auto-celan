@@ -15,10 +15,11 @@ Laptop kamu cuma kirim 1 request kecil → tunggu selesai.
 git init
 git add .
 git commit -m "initial"
+git branch -M main  # Memastikan branch utama adalah main, bukan master
 
 # Buat repo baru di github.com, lalu:
 git remote add origin https://github.com/USERNAME/auto-celan.git
-git push -u origin main
+git push -u origin main --force
 ```
 
 > ⚠️ .gitignore sudah exclude .env, token_drive.json, credentials.json
@@ -125,15 +126,13 @@ Bottleneck ada di RunPod (GPU), bukan di server ini.
 ## Update kode
 
 Setiap `git push` ke branch `main` → Railway otomatis redeploy.
-Setiap `git push` ke branch `master` → Railway otomatis redeploy.
 Tidak perlu rebuild Docker RunPod selama kamu tidak ubah `runpod/`.
 
 ```bash
 # Edit kode → push → Railway auto-deploy dalam ~2 menit
 git add .
 git commit -m "fix: ..."
-git push
-git push origin master
+git push origin main
 ```
 
 ---

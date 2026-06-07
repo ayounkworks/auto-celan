@@ -1,12 +1,10 @@
 # ============================================================
 # core/art_protection.py
-# FIXED v3:
-# - Threshold naik 3 → 5
-# - _is_dark_bubble_region() early exit
-# - _is_ornate_frame_bubble() early exit
-# - _has_complex_colored_background() lebih ketat untuk dark
-# - Side panel guard
-# - GRADIENT_STD_HIGH naik 65 → 72
+# FIXED v4:
+# - BUG1: _is_dark_bubble_region() lebih longgar (130→150, 0.03→0.01)
+# - BUG1: Guard hangul ≥3 karakter = langsung return False (dialog pasti)
+# - BUG6: _sample_border() di-cache, tidak dipanggil 2x
+# - Threshold tetap 5, semua early exit diperkuat
 # ============================================================
 
 import numpy as np
@@ -40,9 +38,12 @@ def _sample_border(img_np, x1, y1, x2, y2, pad):
 
 
 def _is_dark_bubble_region(img_np, x1, y1, x2, y2):
-    """Dark circular bubble (manhwa Korea) → bukan art, jangan protect."""
+    """
+    FIXED v4: threshold naik 130→150, bright_ratio turun 0.03→0.01.
+    Dark circular bubble (manhwa Korea) → bukan art, jangan protect.
+    """
     roi = img_np[y1:y2, x1:x2]
-    if roi.size == 0 or roi.mean() > 130:
+    if roi.size == 0 or roi.mean() > 150:   # FIXED: 130 → 150
         return False
     roi_h, roi_w = roi.shape[:2]
     if roi_h < 20 or roi_w < 20:
@@ -50,7 +51,7 @@ def _is_dark_bubble_region(img_np, x1, y1, x2, y2):
     center = roi[roi_h//4:3*roi_h//4, roi_w//4:3*roi_w//4]
     if center.size == 0:
         return False
-    return float((center > 160).mean()) > 0.03
+    return float((center > 150).mean()) > 0.01  # FIXED: 160→150, 0.03→0.01
 
 
 def _is_ornate_frame_bubble(img_np, x1, y1, x2, y2):
@@ -83,7 +84,7 @@ def _is_gradient_bubble(border_px):
 
 
 def _has_complex_colored_background(img_np, x1, y1, x2, y2):
-    """FIXED v3: dark region butuh threshold jauh lebih tinggi."""
+    """Dark region butuh threshold jauh lebih tinggi."""
     p = 4
     region = img_np[min(y1+p,y2-1):max(y1+p+1,y2-p),
                     min(x1+p,x2-1):max(x1+p+1,x2-p)]
@@ -122,15 +123,22 @@ def is_art_text(img_np, x1, y1, x2, y2, text_str=""):
     if box_area / total_px < ART_MIN_AREA_RATIO:
         return False
 
+    # ── FIXED BUG1: Teks Korea panjang = dialog, bukan art ──
+    t_clean = text_str.strip().replace(" ","").replace("\n","")
+    hangul_count = sum(1 for c in t_clean if '\uAC00' <= c <= '\uD7A3')
+    if hangul_count >= 3:
+        return False  # Teks Korea ≥3 char = pasti dialog
+
     # ── Early exits: jelas bukan art ─────────────────────
     if _is_dark_bubble_region(img_np, x1, y1, x2, y2):
         return False
     if _is_ornate_frame_bubble(img_np, x1, y1, x2, y2):
         return False
 
-    bp = _sample_border(img_np, x1, y1, x2, y2, ART_BORDER_PAD)
-    if bp.size > 0:
-        border_mean = float(bp.mean(axis=1).mean())
+    # ── FIXED BUG6: Cache border_px, jangan panggil 2x ──
+    border_px = _sample_border(img_np, x1, y1, x2, y2, ART_BORDER_PAD)
+    if border_px.size > 0:
+        border_mean = float(border_px.mean(axis=1).mean())
         p = 4
         interior = img_np[min(y1+p,y2-1):max(y1+p+1,y2-p),
                           min(x1+p,x2-1):max(x1+p+1,x2-p)]
@@ -147,7 +155,7 @@ def is_art_text(img_np, x1, y1, x2, y2, text_str=""):
         if not is_side:
             score += 1
 
-    border_px = _sample_border(img_np, x1, y1, x2, y2, ART_BORDER_PAD)
+    # FIXED BUG6: gunakan border_px yang sudah di-cache
     if border_px.size > 0:
         is_bubble, _ = _is_gradient_bubble(border_px)
         if not is_bubble:

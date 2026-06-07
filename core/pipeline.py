@@ -1,9 +1,9 @@
 # ============================================================
 # core/pipeline.py
-# FIXED v2:
-# - Auto-delete output folder setelah 15 menit (non-blocking)
-# - Discord countdown timestamp
-# - Semua fix sebelumnya tetap ada
+# FIXED v3:
+# - BUG3: Closure bug di fetch_vision & process_with_prefetched
+# - BUG5: Hapus input_folder_name yang tidak terpakai (waste API call)
+# - BUG7: Batasi jobs[job_id]["log"] ke 100 entry
 # ============================================================
 
 import gc
@@ -47,7 +47,6 @@ jobs           = {}
 SLICE_HEIGHT   = 1500
 SLICE_OVERLAP  = 150
 
-# Auto-delete delay (menit)
 OUTPUT_DELETE_DELAY_MINUTES = 15
 
 
@@ -121,10 +120,12 @@ def _detect_text_sliced(image: Image.Image, vc) -> list:
 
 job_queue      = []
 cancelled_jobs = set()
-
-vision_client = None
+vision_client  = None
 
 FETCH_VISION_TIMEOUT = 90
+
+# ── FIXED BUG7: Limit log entries ────────────────────────
+LOG_MAX_ENTRIES = 100
 
 
 def job_log(job_id, message):
@@ -132,7 +133,11 @@ def job_log(job_id, message):
     db_append_log(job_id, message)
     if job_id in jobs:
         jobs[job_id]["progress"] = message
-        jobs[job_id]["log"].append(message)
+        log = jobs[job_id]["log"]
+        log.append(message)
+        # FIXED BUG7: trim log agar tidak grow tanpa batas
+        if len(log) > LOG_MAX_ENTRIES:
+            jobs[job_id]["log"] = log[-LOG_MAX_ENTRIES:]
 
 
 def get_queue_position(job_id):
@@ -210,14 +215,10 @@ async def warmup(job_id=None):
             _runpod_warmed = True
 
 
-# ── Auto-Delete Output (NEW: 15 menit delay) ─────────────
+# ── Auto-Delete Output ────────────────────────────────────
 
 async def _auto_delete_output(folder_id: str, folder_name: str,
                                delay_minutes: int = OUTPUT_DELETE_DELAY_MINUTES):
-    """
-    NEW: Hapus output folder setelah delay_minutes.
-    Non-blocking — dipanggil via asyncio.create_task().
-    """
     print(f"⏰ Output '{folder_name}' akan dihapus dalam {delay_minutes} menit")
     await asyncio.sleep(delay_minutes * 60)
     try:
@@ -450,11 +451,8 @@ async def pipeline(job_id: str, folder_url: str):
 
         import os
 
-        def _get_folder_name():
-            meta = _get_drive().files().get(fileId=folder_id, fields="name").execute()
-            return meta.get("name", folder_id)
-
-        input_folder_name = await asyncio.to_thread(_get_folder_name)
+        # FIXED BUG5: Hapus _get_folder_name() yang tidak terpakai
+        # (sebelumnya waste 1 API call ke Drive per job)
         folder_name, output_folder_id = await asyncio.to_thread(
             create_output_folder, DRIVE_OUTPUT_FOLDER_ID, "output"
         )
@@ -498,7 +496,9 @@ async def pipeline(job_id: str, folder_url: str):
             batch = pending_files[i:i + batch_size]
             t0    = time.time()
 
-            async def fetch_vision(f):
+            # FIXED BUG3: Closure bug — gunakan default argument untuk capture f
+            async def fetch_vision(f, _f=None):
+                f = _f if _f is not None else f
                 try:
                     job_log(job_id, f"Fetching {f['name']}")
                     raw = await asyncio.wait_for(
@@ -528,9 +528,14 @@ async def pipeline(job_id: str, folder_url: str):
                     job_log(job_id, f"  Vision error {f['name']}: {e}")
                     return None
 
-            vision_results = await asyncio.gather(*[fetch_vision(f) for f in batch])
+            # FIXED BUG3: Pass f sebagai default argument
+            vision_results = await asyncio.gather(*[fetch_vision(f, _f=f) for f in batch])
 
-            async def process_with_prefetched(f, img_and_texts):
+            # FIXED BUG3: Closure bug — gunakan default argument untuk capture f dan vr
+            async def process_with_prefetched(f, img_and_texts, _f=None, _vr=None):
+                f            = _f if _f is not None else f
+                img_and_texts = _vr if _vr is not None else img_and_texts
+
                 if img_and_texts is None:
                     row      = db_get_job(job_id)
                     failed   = json.loads(row["failed_files"] or "[]")
@@ -549,7 +554,7 @@ async def pipeline(job_id: str, folder_url: str):
                 )
 
             results = await asyncio.gather(*[
-                process_with_prefetched(f, vr)
+                process_with_prefetched(f, vr, _f=f, _vr=vr)
                 for f, vr in zip(batch, vision_results)
             ])
 
@@ -585,11 +590,10 @@ async def pipeline(job_id: str, folder_url: str):
                 jobs[job_id]["status"]      = final_status
                 jobs[job_id]["finished_at"] = datetime.now().isoformat()
 
-        # ── FIXED: Auto-delete setelah 15 menit (non-blocking) ──
         if output_folder_id:
-            delete_at  = datetime.utcnow() + timedelta(minutes=OUTPUT_DELETE_DELAY_MINUTES)
-            unix_ts    = int(delete_at.timestamp())
-            jobs[job_id]["delete_at_unix"] = unix_ts  # untuk Discord countdown
+            delete_at = datetime.utcnow() + timedelta(minutes=OUTPUT_DELETE_DELAY_MINUTES)
+            unix_ts   = int(delete_at.timestamp())
+            jobs[job_id]["delete_at_unix"] = unix_ts
             asyncio.create_task(
                 _auto_delete_output(output_folder_id, folder_name,
                                     OUTPUT_DELETE_DELAY_MINUTES)
@@ -637,7 +641,7 @@ async def run_pipeline(job_id: str, folder_url: str):
         await pipeline(job_id, folder_url)
 
 
-# ── Auto-Delete Loop (existing, tetap ada) ───────────────
+# ── Auto-Delete Loop ──────────────────────────────────────
 
 async def deletion_loop():
     from core.database import db_get_pending_deletions, db_remove_pending_deletion

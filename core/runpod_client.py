@@ -1,11 +1,7 @@
 # ============================================================
 # core/runpod_client.py
-# RunPod LaMa client — FIXED + OPTIMIZED
-#
-# Perubahan:
-# 1. Gunakan /runsync endpoint → tidak perlu polling loop
-# 2. Fallback ke /run + poll jika runsync timeout (>60s)
-# 3. asyncio.wait_for() agar tidak hang selamanya
+# FIXED v2:
+# - BUG2: Guard img is not None sebelum img.size (line 160, 234)
 # ============================================================
 
 import asyncio
@@ -24,17 +20,13 @@ from core.config import (
 
 runpod_sem: Optional[asyncio.Semaphore] = None
 
-RUNSYNC_TIMEOUT = 55   # detik — RunPod runsync max
-POLL_INTERVAL   = 0.5  # detik — polling fallback
-POLL_MAX        = 160  # iterasi — 60 detik max polling
-
-
-# ============================================================
-# helpers
-# ============================================================
+RUNSYNC_TIMEOUT = 55
+POLL_INTERVAL   = 0.5
+POLL_MAX        = 160
 
 LAMA_MIN_SIZE = 128
 LAMA_MAX_AREA = 800 * 3000
+
 
 def _resize_for_lama(image, mask):
     orig_w, orig_h = image.size
@@ -122,30 +114,19 @@ def _build_payload(image, mask) -> dict:
     }
 
 
-# ============================================================
-# runsync (fast path — synchronous, no polling needed)
-# ============================================================
-
 async def _run_runsync(image, mask, label="", http_session=None) -> Optional[Image.Image]:
-    """
-    Kirim ke /runsync — RunPod menunggu hasil di server dan
-    mengembalikan output langsung dalam satu response.
-    Lebih cepat karena tidak ada polling overhead.
-    """
     img_send, mask_send, orig_w, orig_h, was_resized = _resize_for_lama(image, mask)
     payload = _build_payload(img_send, mask_send)
-    headers     = {
+    headers = {
         "Authorization": f"Bearer {RUNPOD_API_KEY}",
         "Content-Type":  "application/json",
     }
-    url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/runsync"
-
+    url   = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/runsync"
     start = time.time()
+
     try:
         async with http_session.post(
-            url,
-            headers=headers,
-            json=payload,
+            url, headers=headers, json=payload,
             timeout=aiohttp.ClientTimeout(total=RUNSYNC_TIMEOUT),
         ) as r:
             if r.status not in (200, 201):
@@ -156,20 +137,20 @@ async def _run_runsync(image, mask, label="", http_session=None) -> Optional[Ima
 
         status = data.get("status")
         if status == "COMPLETED":
-            img = await decode_image_async(data.get("output"), http_session=http_session)
-            if was_resized and img.size != (orig_w, orig_h):
-                img = img.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
+            img     = await decode_image_async(data.get("output"), http_session=http_session)
             elapsed = time.time() - start
+            # FIXED BUG2: guard img is not None sebelum .size
             if img is None:
                 print(f"[{label}] runsync: output tidak bisa di-decode ({elapsed:.2f}s)")
-            else:
-                print(f"[{label}] runsync selesai dalam {elapsed:.2f}s")
+                return None
+            if was_resized and img.size != (orig_w, orig_h):
+                img = img.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
+            print(f"[{label}] runsync selesai dalam {elapsed:.2f}s")
             return img
         elif status == "FAILED":
             print(f"[{label}] runsync FAILED: {data.get('error')} ({time.time()-start:.2f}s)")
             return None
         else:
-            # Unexpected status (IN_QUEUE, IN_PROGRESS dll) → fallback ke polling
             print(f"[{label}] runsync status={status}, fallback ke polling")
             return None
 
@@ -181,15 +162,10 @@ async def _run_runsync(image, mask, label="", http_session=None) -> Optional[Ima
         return None
 
 
-# ============================================================
-# polling fallback (/run + /status)
-# ============================================================
-
 async def _run_poll(image, mask, label="", http_session=None) -> Optional[Image.Image]:
-    """Fallback ke /run + polling /status jika runsync gagal."""
     img_send, mask_send, orig_w, orig_h, was_resized = _resize_for_lama(image, mask)
     payload = _build_payload(img_send, mask_send)
-    headers     = {
+    headers = {
         "Authorization": f"Bearer {RUNPOD_API_KEY}",
         "Content-Type":  "application/json",
     }
@@ -198,8 +174,7 @@ async def _run_poll(image, mask, label="", http_session=None) -> Optional[Image.
     try:
         async with http_session.post(
             f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run",
-            headers=headers,
-            json=payload,
+            headers=headers, json=payload,
             timeout=aiohttp.ClientTimeout(total=60),
         ) as r:
             if r.status != 200:
@@ -231,13 +206,14 @@ async def _run_poll(image, mask, label="", http_session=None) -> Optional[Image.
         status = sj.get("status")
         if status == "COMPLETED":
             img     = await decode_image_async(sj.get("output"), http_session=http_session)
-            if was_resized and img.size != (orig_w, orig_h):
-                img = img.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
             elapsed = time.time() - start
+            # FIXED BUG2: guard img is not None sebelum .size
             if img is None:
                 print(f"[{label}] poll: output tidak bisa di-decode ({elapsed:.2f}s)")
-            else:
-                print(f"[{label}] poll selesai dalam {elapsed:.2f}s")
+                return None
+            if was_resized and img.size != (orig_w, orig_h):
+                img = img.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
+            print(f"[{label}] poll selesai dalam {elapsed:.2f}s")
             return img
         elif status in ("FAILED", "CANCELLED"):
             print(f"[{label}] poll {status}: {sj.get('error')} ({time.time()-start:.2f}s)")
@@ -247,20 +223,12 @@ async def _run_poll(image, mask, label="", http_session=None) -> Optional[Image.
     return None
 
 
-# ============================================================
-# public API
-# ============================================================
-
 async def run_runpod_lama(
     image,
     mask,
     label="",
     http_session=None,
 ) -> Optional[Image.Image]:
-    """
-    Strategi: coba runsync dulu (cepat, tidak ada polling overhead).
-    Jika gagal/timeout, fallback ke /run + polling.
-    """
     if http_session is None:
         async with aiohttp.ClientSession() as session:
             return await run_runpod_lama(image, mask, label, session)

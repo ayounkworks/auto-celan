@@ -31,7 +31,7 @@ if not DISCORD_TOKEN:
 
 # ── Import core ───────────────────────────────────────────
 
-from core.config   import GOOGLE_API_KEY, OUTPUT_AUTO_DELETE_MINUTES
+from core.config   import GOOGLE_API_KEY, OUTPUT_DELETE_DELAY_MINUTES
 from core.database import (
     init_db, db_create_job, db_get_job,
     db_register_user, db_update_last_job,
@@ -94,7 +94,7 @@ def _make_job_embed(job_id: str, data: dict) -> discord.Embed:
     if status == "completed" and output_id:
         url = f"https://drive.google.com/drive/folders/{output_id}"
         # Hitung waktu penghapusan untuk timestamp Discord
-        unix_ts = int(datetime.now().timestamp() + (OUTPUT_AUTO_DELETE_MINUTES * 60))
+        unix_ts = int(datetime.now().timestamp() + (OUTPUT_DELETE_DELAY_MINUTES * 60))
         embed.add_field(
             name="📁 Output Drive", 
             value=f"[Buka folder]({url})\n⏰ Dihapus otomatis <t:{unix_ts}:R>", 
