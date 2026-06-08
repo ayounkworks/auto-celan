@@ -229,45 +229,12 @@ async def run_runpod_lama(
         async with aiohttp.ClientSession() as session:
             return await run_runpod_lama(image, mask, label, session)
 
-    orig_w, orig_h = image.size
-    cols = math.ceil(orig_w / TILE_SIZE)
-    rows = math.ceil(orig_h / TILE_SIZE)
-    
-    full_result = image.copy()
-    
-    print(f"[{label}] Memulai grid slicing {rows}x{cols} tiles ({TILE_SIZE}px).")
-
-    for r in range(rows):
-        for c in range(cols):
-            x1, y1 = c * TILE_SIZE, r * TILE_SIZE
-            x2, y2 = min(x1 + TILE_SIZE, orig_w), min(y1 + TILE_SIZE, orig_h)
-            
-            slice_img = image.crop((x1, y1, x2, y2))
-            slice_mask = mask.crop((x1, y1, x2, y2))
-            
-            # Optimasi: Lewati jika tidak ada masker di tile ini
-            if slice_mask.getextrema() == (0, 0):
-                continue
-                
-            print(f"  > Memproses tile ({r},{c}) {slice_img.size[0]}x{slice_img.size[1]}.")
-            
-            async with (runpod_sem or asyncio.Lock()):
-                # Gunakan runsync untuk tile kecil agar cepat, fallback ke poll jika gagal
-                inpainted_tile = await _run_runsync(
-                    slice_img, slice_mask, 
-                    label=f"{label}_t{r}{c}", 
-                    http_session=http_session
-                )
-                
-                if inpainted_tile is None:
-                    inpainted_tile = await _run_poll(
-                        slice_img, slice_mask, 
-                        label=f"{label}_t{r}{c}", 
-                        http_session=http_session
-                    )
-            
-            if inpainted_tile:
-                full_result.paste(inpainted_tile, (x1, y1))
-                
-    print(f"[{label}] Selesai pemrosesan grid slicing.")
-    return full_result
+    # ROI Processing: Proses gambar yang diterima sebagai satu kesatuan
+    async with (runpod_sem or asyncio.Lock()):
+        # Coba runsync dulu untuk kecepatan (biasanya ROI berukuran kecil)
+        result = await _run_runsync(image, mask, label, http_session)
+        if result is not None:
+            return result
+        
+        # Fallback ke polling jika job berat atau timeout
+        return await _run_poll(image, mask, label, http_session)

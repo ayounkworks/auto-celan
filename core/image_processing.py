@@ -389,7 +389,7 @@ def smart_clean(
     original: Image.Image,
     texts,
     img_np:   np.ndarray
-) -> Tuple[Image.Image, Image.Image, int, int]:
+) -> Tuple[Image.Image, Image.Image, int, int, list]:
     """
     FIXED v5 WORKFLOW:
 
@@ -416,6 +416,7 @@ def smart_clean(
     # MERGE BOXES: Gabungkan teks yang berdekatan agar diproses sebagai 1 bubble
     merged_texts = _merge_text_blocks(texts, width, height)
 
+    inpaint_boxes = []
     sfx_count    = 0
     dialog_count = 0
 
@@ -502,6 +503,7 @@ def smart_clean(
 
         # Selalu gunakan LaMa untuk dialog normal/white bubble
         lama_draw.rectangle([fx1, fy1, fx2, fy2], fill=255)
+        inpaint_boxes.append((fx1, fy1, fx2, fy2))
 
     # Bersihkan masker dari noise kecil (misal deteksi titik/debu yang tidak perlu di-inpaint)
     if lama_mask.getbbox():
@@ -512,4 +514,4 @@ def smart_clean(
         # Perhalus tepi mask agar transisi inpainting lebih natural (anti-aliasing)
         lama_mask = lama_mask.filter(ImageFilter.GaussianBlur(radius=3))
 
-    return result, lama_mask, sfx_count, dialog_count
+    return result, lama_mask, sfx_count, dialog_count, inpaint_boxes

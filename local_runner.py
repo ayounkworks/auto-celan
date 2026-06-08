@@ -89,7 +89,7 @@ async def process_one(
 
             img_np = np.array(img)
 
-            prefilled, lama_mask, sfx_c, dial_c = await loop.run_in_executor(
+            prefilled, lama_mask, sfx_c, dial_c, inpaint_boxes = await loop.run_in_executor(
                 None, smart_clean, img, texts, img_np,
             )
 

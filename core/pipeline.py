@@ -287,7 +287,7 @@ async def process_image(
         else:
             img_np = np.array(img)
 
-            prefilled, lama_mask, sfx_count, dialog_count = await asyncio.to_thread(
+            prefilled, lama_mask, sfx_count, dialog_count, inpaint_boxes = await asyncio.to_thread(
                 smart_clean, img, texts, img_np
             )
             del img_np
@@ -295,66 +295,42 @@ async def process_image(
             has_mask = lama_mask.getbbox() is not None
 
             if has_mask:
-                iw, ih    = prefilled.size
-                mask_arr  = np.array(lama_mask)
+                iw, ih = prefilled.size
                 final     = prefilled.copy()
+                job_log(job_id, f"  {filename}: Memproses {len(inpaint_boxes)} ROI Inpaint.")
 
-                rows_with_mask = np.where(mask_arr.max(axis=1) > 0)[0]
+                for idx, (bx1, by1, bx2, by2) in enumerate(inpaint_boxes):
+                    # Gunakan padding untuk konteks inpainting
+                    PAD = 40
+                    cx1 = max(0,  bx1 - PAD)
+                    cy1 = max(0,  by1 - PAD)
+                    cx2 = min(iw, bx2 + PAD)
+                    cy2 = min(ih, by2 + PAD)
 
-                BAND_GAP = 300
-                bands    = []
-                if len(rows_with_mask) > 0:
-                    prev = int(rows_with_mask[0])
-                    band_start = prev
-                    for i in range(1, len(rows_with_mask)):
-                        cur = int(rows_with_mask[i])
-                        if cur - prev > BAND_GAP:
-                            bands.append((band_start, prev + 1))
-                            band_start = cur
-                        prev = cur
-                    bands.append((band_start, prev + 1))
+                    img_crop  = prefilled.crop((cx1, cy1, cx2, cy2))
+                    mask_crop = lama_mask.crop((cx1, cy1, cx2, cy2))
 
-                job_log(job_id, f"  {filename}: {len(bands)} inpaint band(s) dari ({iw}x{ih})")
-
-                for band_y1, band_y2 in bands:
-                    band_img  = prefilled.crop((0, band_y1, iw, band_y2))
-                    band_mask = lama_mask.crop((0, band_y1, iw, band_y2))
-
-                    bb = band_mask.getbbox()
-                    if bb is None:
+                    if mask_crop.getextrema() == (0, 0):
                         continue
-                    bh = band_y2 - band_y1
-                    cl = max(0,  bb[0] - INPAINT_CROP_PAD)
-                    ct = max(0,  bb[1] - INPAINT_CROP_PAD)
-                    cr = min(iw, bb[2] + INPAINT_CROP_PAD)
-                    cb = min(bh, bb[3] + INPAINT_CROP_PAD)
-
-                    img_crop  = band_img.crop((cl, ct, cr, cb))
-                    mask_crop = band_mask.crop((cl, ct, cr, cb))
 
                     raw_inpaint = await run_runpod_lama(
                         img_crop, mask_crop,
-                        label=f"{filename}@y{band_y1}",
+                        label=f"{filename}_roi{idx}",
                         http_session=_http_session,
                     )
                     inpaint = validate_inpaint(raw_inpaint, img_crop)
                     if inpaint is not None:
-                        c_arr   = np.array(img_crop)
-                        m_arr   = np.array(mask_crop)
-                        masked  = c_arr[m_arr > 0]
-                        is_dark = masked.mean() < 80 if masked.size > 0 else False
-                        blur_r  = 5 if is_dark else 7
+                        # Gunakan soft mask untuk blending halus
+                        blur_r  = 5
                         soft_mc = mask_crop.filter(ImageFilter.GaussianBlur(blur_r))
-
-                        paste_x = cl
-                        paste_y = band_y1 + ct
-                        tmp     = final.copy()
-                        tmp.paste(inpaint, (paste_x, paste_y))
-                        full_sm = Image.new("L", prefilled.size, 0)
-                        full_sm.paste(soft_mc, (paste_x, paste_y))
-                        final.paste(tmp, (0, 0), full_sm)
+                        
+                        roi_result = prefilled.crop((cx1, cy1, cx2, cy2))
+                        roi_result.paste(inpaint, (0, 0))
+                        
+                        # Paste kembali menggunakan soft mask di koordinat crop semula
+                        final.paste(roi_result, (cx1, cy1), soft_mc)
                     else:
-                        job_log(job_id, f"  {filename}@y{band_y1}: inpaint corrupt, skip band")
+                        job_log(job_id, f"  {filename}_roi{idx}: inpaint corrupt, skip")
             else:
                 final = prefilled
 
