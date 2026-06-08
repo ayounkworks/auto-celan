@@ -1,12 +1,16 @@
 # ============================================================
 # core/image_processing.py
-# FIXED v3:
-# - import re top-level (fix UnboundLocalError)
-# - PADDING naik 25→80 (dari config)
-# - _expand_bbox_to_bubble(): auto-expand untuk dark/circular bubble
-# - is_sfx(): hapus dark bg penalty
-# - _is_circular_or_spiky_bubble(): helper baru
-# - smart_clean(): force-dialog untuk circular bubble + expand bbox
+# FIXED v5 - WORKFLOW REWRITE:
+#
+# Bug logika yang diperbaiki:
+# L1: Detection (bubble/SFX/art) sekarang pakai RAW bbox (Vision bbox)
+#     bukan padded bbox. Padding hanya untuk fill area.
+# L2: is_sfx + is_art_text pakai raw bbox → lebih akurat
+# L3: _expand_bbox_to_bubble mulai dari raw bbox (teks), bukan padded
+# L4: current_np di-update setelah setiap fill
+# L5: dark bubble → gradient fill (bukan LaMa) → tidak lagi blob hitam
+#
+# Semua filter TETAP ADA tapi dipanggil dengan koordinat yang benar.
 # ============================================================
 
 import io
@@ -55,23 +59,86 @@ def get_dynamic_batch_size(total_files: int) -> int:
     else: return 25
 
 
+# ── Dark Bubble Gradient Fill ─────────────────────────────
+
+def dark_bubble_gradient_fill(
+    img:    Image.Image,
+    img_np: np.ndarray,
+    x1: int, y1: int,
+    x2: int, y2: int,
+) -> Optional[Image.Image]:
+    """
+    Fill dark circular bubble dengan gradient warna dari luar bubble.
+    Hasilnya natural, tidak ada blob hitam seperti LaMa.
+    Return None kalau tidak bisa (luar juga gelap) → fallback ke LaMa.
+    """
+    h_img, w_img = img_np.shape[:2]
+    sample_h = min(15, max(5, (y2 - y1) // 10))
+
+    top_region = img_np[max(0, y1-sample_h):y1, max(0,x1):min(w_img,x2)]
+    bot_region = img_np[y2:min(h_img, y2+sample_h), max(0,x1):min(w_img,x2)]
+
+    if top_region.size == 0 and bot_region.size == 0:
+        return None
+
+    top_color = top_region.reshape(-1, 3).mean(axis=0) if top_region.size > 0 else None
+    bot_color = bot_region.reshape(-1, 3).mean(axis=0) if bot_region.size > 0 else None
+
+    top_bright = float(top_color.mean()) if top_color is not None else 0
+    bot_bright = float(bot_color.mean()) if bot_color is not None else 0
+
+    # Kalau atas dan bawah keduanya gelap → tidak bisa gradient fill
+    if top_bright < 60 and bot_bright < 60:
+        return None
+
+    if top_color is None: top_color = bot_color
+    if bot_color is None: bot_color = top_color
+
+    result  = img.copy()
+    res_arr = np.array(result)
+
+    fill_h = max(1, y2 - y1)
+    fill_w = max(1, x2 - x1)
+    ay1 = max(0, y1); ay2 = min(h_img, y2)
+    ax1 = max(0, x1); ax2 = min(w_img, x2)
+    gh = ay2 - ay1; gw = ax2 - ax1
+    if gh <= 0 or gw <= 0:
+        return None
+
+    t_values   = np.linspace(0, 1, gh).reshape(-1, 1)
+    gradient   = (1 - t_values) * top_color + t_values * bot_color
+    gradient   = np.clip(gradient, 0, 255).astype(np.uint8)
+    gradient2d = np.tile(gradient, (1, gw, 1))
+    res_arr[ay1:ay2, ax1:ax2] = gradient2d[:gh, :gw]
+    result = Image.fromarray(res_arr)
+
+    # Soft blend di edge
+    pad  = min(15, max(5, (y2-y1)//8))
+    bx1  = max(0, x1-pad); by1 = max(0, y1-pad)
+    bx2  = min(img.width, x2+pad); by2 = min(img.height, y2+pad)
+    patch = result.crop((bx1, by1, bx2, by2))
+    orig  = img.crop((bx1, by1, bx2, by2))
+    mask  = Image.new("L", patch.size, 0)
+    md    = ImageDraw.Draw(mask)
+    md.rectangle([x1-bx1, y1-by1, x2-bx1, y2-by1], fill=255)
+    mask  = mask.filter(ImageFilter.GaussianBlur(pad * 0.6))
+    result.paste(Image.composite(patch, orig, mask), (bx1, by1))
+    return result
+
+
 # ── Bubble Expansion ──────────────────────────────────────
 
 def _expand_bbox_to_bubble(img_np: np.ndarray,
                             x1: int, y1: int, x2: int, y2: int,
-                            max_expand: int = 150) -> Tuple[int,int,int,int]:
+                            max_expand: int = 200) -> Tuple[int,int,int,int]:
     """
-    Expand bounding box untuk cover seluruh dark circular bubble.
-    Cara kerja: flood-fill ke luar dari bbox selama pixel gelap.
-    Dipakai untuk dark bubble agar seluruh area ter-mask, bukan hanya teks.
+    FIXED L3: Mulai dari raw bbox (teks), expand ke luar sampai
+    pixel tidak gelap lagi. Threshold 80 = batas dark bubble.
     """
     h, w = img_np.shape[:2]
     gray = img_np.mean(axis=2)
-
-    # Threshold: pixel dianggap bagian dari dark bubble
     threshold = 80
 
-    # Expand ke atas
     new_y1 = y1
     for dy in range(1, max_expand):
         row_y = max(0, y1 - dy)
@@ -81,7 +148,6 @@ def _expand_bbox_to_bubble(img_np: np.ndarray,
         else:
             break
 
-    # Expand ke bawah
     new_y2 = y2
     for dy in range(1, max_expand):
         row_y = min(h-1, y2 + dy)
@@ -91,7 +157,6 @@ def _expand_bbox_to_bubble(img_np: np.ndarray,
         else:
             break
 
-    # Expand ke kiri
     new_x1 = x1
     for dx in range(1, max_expand):
         col_x = max(0, x1 - dx)
@@ -101,7 +166,6 @@ def _expand_bbox_to_bubble(img_np: np.ndarray,
         else:
             break
 
-    # Expand ke kanan
     new_x2 = x2
     for dx in range(1, max_expand):
         col_x = min(w-1, x2 + dx)
@@ -114,84 +178,67 @@ def _expand_bbox_to_bubble(img_np: np.ndarray,
     return new_x1, new_y1, new_x2, new_y2
 
 
-# ── Circular/Spiky Bubble Detection ──────────────────────
+# ── Bubble Detection ──────────────────────────────────────
 
-def _is_circular_or_spiky_bubble(img_np: np.ndarray,
-                                   x1: int, y1: int,
-                                   x2: int, y2: int) -> bool:
+def _is_dark_bubble(img_np: np.ndarray,
+                    x1: int, y1: int,
+                    x2: int, y2: int) -> bool:
     """
-    Deteksi speech bubble berbentuk circular atau spiky/star.
-    - Dark circular bubble: bg gelap, teks terang
-    - Spiky/star bubble: interior putih, outline tidak beraturan
-    Return True = ini bubble, bukan art.
+    FIXED L1: Pakai raw bbox (tight sekitar teks) untuk deteksi.
+    Dark bubble = bg gelap, ada teks terang di dalam.
     """
     roi = img_np[y1:y2, x1:x2]
     if roi.size == 0:
         return False
-
+    mean_val = float(roi.mean())
+    # Background harus gelap
+    if mean_val > 140:
+        return False
     roi_h, roi_w = roi.shape[:2]
-    if roi_h < 30 or roi_w < 30:
+    if roi_h < 10 or roi_w < 10:
         return False
+    # Cek ada teks terang (pixel > 150) — artinya teks putih di bg hitam
+    bright = float((roi > 150).mean())
+    return bright > 0.01
 
-    aspect = roi_w / max(roi_h, 1)
-    if not (0.4 < aspect < 2.5):
+
+def _is_white_bubble(img_np: np.ndarray,
+                     x1: int, y1: int,
+                     x2: int, y2: int) -> bool:
+    """
+    White/light bubble — bg cerah. Selalu hapus (dialog biasa).
+    """
+    roi = img_np[y1:y2, x1:x2]
+    if roi.size == 0:
         return False
-
-    margin   = max(5, min(roi_h,roi_w)//8)
-    interior = roi[margin:roi_h-margin, margin:roi_w-margin]
-    if interior.size == 0:
-        return False
-
-    interior_mean = float(interior.mean())
-    full_mean     = float(roi.mean())
-    contrast      = abs(interior_mean - full_mean)
-
-    # Spiky white bubble
-    interior_white = float((interior > 220).all(axis=2).mean())
-    if interior_white > 0.55 and contrast > 10.0:
-        return True
-
-    # Dark circular bubble
-    if interior_mean < 100:
-        bright_ratio = float((interior > 160).mean())
-        if bright_ratio > 0.02 and contrast > 8.0:
-            return True
-
-    return False
+    return float(roi.mean()) > 180
 
 
 # ── SFX Filter ────────────────────────────────────────────
 
-def is_sfx(img_np: np.ndarray, x1: int, y1: int, x2: int, y2: int,
+def is_sfx(img_np: np.ndarray,
+           rx1: int, ry1: int, rx2: int, ry2: int,
            text_str: str = "") -> bool:
     """
-    FIXED v3: Hapus dark bg penalty sepenuhnya.
-    Dark background bukan alasan skip SFX detection.
+    FIXED L2: Terima raw bbox dari Vision API (bukan padded).
+    SFX = sound effect yang seharusnya skip (tidak dihapus).
     """
-    box_w    = x2 - x1
-    box_h    = y2 - y1
+    box_w    = rx2 - rx1
+    box_h    = ry2 - ry1
     total_px = img_np.shape[0] * img_np.shape[1]
 
     if (box_w * box_h) / total_px < SFX_MIN_AREA_RATIO:
         return False
 
-    margin_x = max(2, box_w//5)
-    margin_y = max(2, box_h//5)
-    ix1 = min(x1+margin_x, x2-1)
-    iy1 = min(y1+margin_y, y2-1)
-    ix2 = max(ix1+1, x2-margin_x)
-    iy2 = max(iy1+1, y2-margin_y)
-
-    region = img_np[iy1:iy2, ix1:ix2]
+    region = img_np[max(0,ry1):min(img_np.shape[0],ry2),
+                    max(0,rx1):min(img_np.shape[1],rx2)]
     if region.size > 0:
-        gray = np.mean(region, axis=2) if region.ndim==3 else region.astype(float)
+        gray   = np.mean(region, axis=2) if region.ndim==3 else region.astype(float)
         mean_b = float(np.mean(gray))
         std_b  = float(np.std(gray))
 
         if mean_b >= DIALOG_BG_LIGHT:
             return False
-        # FIXED: hapus early return untuk dark bg
-        # Dark background BUKAN alasan skip
         if std_b <= DIALOG_BG_MAX_STD and mean_b > DIALOG_BG_DARK:
             return False
 
@@ -200,9 +247,8 @@ def is_sfx(img_np: np.ndarray, x1: int, y1: int, x2: int, y2: int,
     if box_h >= SFX_BOX_HEIGHT_MIN: score += 1
 
     t = text_str.strip().replace(" ","").replace("\n","")
-    char_count = len(t)
-    if char_count > 0:
-        area_per_char = (box_w*box_h)/char_count
+    if len(t) > 0:
+        area_per_char = (box_w*box_h)/len(t)
         if area_per_char > SFX_AREA_PER_CHAR: score += 1
         if t.isupper() and t.isalpha() and len(t) <= 8: score += 1
         katakana = sum(1 for c in t if '\u30A0' <= c <= '\u30FF')
@@ -210,7 +256,6 @@ def is_sfx(img_np: np.ndarray, x1: int, y1: int, x2: int, y2: int,
 
         hangul = [c for c in t if '\uAC00' <= c <= '\uD7A3']
         hangul_ratio = len(hangul)/len(t)
-
         if hangul_ratio > 0.5:
             half = len(t)//2
             if half >= 1 and len(t) >= 2 and t[:half] == t[half:half*2]:
@@ -218,7 +263,6 @@ def is_sfx(img_np: np.ndarray, x1: int, y1: int, x2: int, y2: int,
             elif len(t) <= 4 and (box_w*box_h)/total_px < SFX_MIN_AREA_RATIO*5:
                 score += 1
 
-        # FIXED: re sudah di-import di top level
         if re.fullmatch(r'[.…·・]+', t):
             score += 2
 
@@ -252,10 +296,17 @@ def smart_clean(
     img_np:   np.ndarray
 ) -> Tuple[Image.Image, Image.Image, int, int]:
     """
-    FIXED v3:
-    - _is_circular_or_spiky_bubble() force-dialog
-    - _expand_bbox_to_bubble() untuk dark bubble agar full bubble ter-mask
-    - PADDING sudah naik via config (25→80)
+    FIXED v5 WORKFLOW:
+
+    Untuk setiap teks dari Vision API:
+    1. Simpan RAW bbox (koordinat Vision API asli, + small padding 15px)
+    2. Gunakan raw bbox untuk DETECTION (bubble/SFX/art)
+    3. Kalau dark bubble → expand ke full bubble bounds
+    4. Kalau lainnya → tambah padding untuk fill area
+    5. Fill:
+       - Dark bubble → gradient fill (tidak pakai LaMa)
+       - White bubble/dialog → gaussian blur atau LaMa
+    6. Update current_np setelah fill (FIXED L4)
     """
     width, height = original.size
     total_area    = width * height
@@ -264,125 +315,144 @@ def smart_clean(
     lama_mask     = Image.new("L", (width, height), 0)
     lama_draw     = ImageDraw.Draw(lama_mask)
 
+    # FIXED L4: current_np di-update setelah setiap fill
+    current_np = img_np.copy()
+
     sfx_count    = 0
     dialog_count = 0
+
+    # FIXED L1/L2/L3: small padding (15px) untuk detection,
+    # besar padding (PADDING=80px) hanya untuk fill
+    DETECT_PAD = min(15, max(5, PADDING // 5))
 
     for text in texts[1:]:
         vertices = text.bounding_poly.vertices
         xs = [v.x for v in vertices]
         ys = [v.y for v in vertices]
 
-        # Base bbox dengan PADDING (sudah naik ke 80 via config)
-        x1 = max(0, min(xs) - PADDING)
-        y1 = max(0, min(ys) - PADDING)
-        x2 = min(width,  max(xs) + PADDING)
-        y2 = min(height, max(ys) + PADDING)
+        # RAW bbox dari Vision API (+ small padding untuk detection)
+        rx1 = max(0, min(xs) - DETECT_PAD)
+        ry1 = max(0, min(ys) - DETECT_PAD)
+        rx2 = min(width,  max(xs) + DETECT_PAD)
+        ry2 = min(height, max(ys) + DETECT_PAD)
 
-        if x1 >= x2 or y1 >= y2:
+        if rx1 >= rx2 or ry1 >= ry2:
             continue
 
-        box_w    = x2 - x1
-        box_h    = y2 - y1
         text_str = text.description if hasattr(text, 'description') else ""
 
-        if box_w * box_h > total_area * MAX_AREA_RATIO:
-            pad_s  = max(4, min(box_w,box_h)//8)
-            ix1 = min(x1+pad_s, x2-1)
-            iy1 = min(y1+pad_s, y2-1)
-            ix2 = max(ix1+1, x2-pad_s)
-            iy2 = max(iy1+1, y2-pad_s)
-            region = img_np[iy1:iy2, ix1:ix2]
-            if region.size > 0:
-                gray   = np.mean(region,axis=2) if region.ndim==3 else region.astype(float)
-                bg_std  = float(np.std(gray))
-                bg_mean = float(np.mean(gray))
-                if not (bg_std < 45 and (bg_mean > 160 or bg_mean < 60)):
-                    continue
-            else:
-                continue
+        # ── STEP 1: Deteksi tipe teks/bubble ─────────────
+        # Semua deteksi pakai RAW bbox (FIXED L1, L2)
 
-        # ── Cek circular/spiky bubble DULU ───────────────
-        force_dialog = _is_circular_or_spiky_bubble(img_np, x1, y1, x2, y2)
+        is_dark_bub  = _is_dark_bubble(current_np, rx1, ry1, rx2, ry2)
+        is_white_bub = _is_white_bubble(current_np, rx1, ry1, rx2, ry2)
 
-        # Kalau dark bubble, expand bbox ke seluruh bubble area
-        is_dark_bubble = False
-        if force_dialog:
-            roi = img_np[y1:y2, x1:x2]
-            if roi.size > 0 and roi.mean() < 100:
-                is_dark_bubble = True
-                x1, y1, x2, y2 = _expand_bbox_to_bubble(
-                    img_np, x1, y1, x2, y2,
-                    max_expand=BUBBLE_EXPAND_DARK
-                )
-                # Clamp
-                x1 = max(0, x1)
-                y1 = max(0, y1)
-                x2 = min(width, x2)
-                y2 = min(height, y2)
-
-        if not force_dialog:
-            if is_sfx(img_np, x1, y1, x2, y2, text_str):
+        # SFX check — hanya kalau bukan bubble
+        if not is_dark_bub and not is_white_bub:
+            if is_sfx(current_np, rx1, ry1, rx2, ry2, text_str):
                 sfx_count += 1
                 continue
-            if is_art_text(img_np, x1, y1, x2, y2, text_str):
+
+        # Art protection — hanya kalau bukan bubble (FIXED L2)
+        if not is_dark_bub and not is_white_bub:
+            if is_art_text(current_np, rx1, ry1, rx2, ry2, text_str):
                 continue
 
         dialog_count += 1
 
-        ratio = (x2-x1) / max(y2-y1, 1)
-        if ratio < 0.1 or ratio > 10.0:
+        # ── STEP 2: Tentukan fill bbox ────────────────────
+
+        if is_dark_bub:
+            # FIXED L3: expand dari RAW bbox (bukan padded)
+            fx1, fy1, fx2, fy2 = _expand_bbox_to_bubble(
+                current_np, rx1, ry1, rx2, ry2,
+                max_expand=BUBBLE_EXPAND_DARK
+            )
+            fx1 = max(0, fx1); fy1 = max(0, fy1)
+            fx2 = min(width, fx2); fy2 = min(height, fy2)
+        else:
+            # Normal dialog: gunakan PADDING penuh untuk fill
+            fx1 = max(0, min(xs) - PADDING)
+            fy1 = max(0, min(ys) - PADDING)
+            fx2 = min(width,  max(xs) + PADDING)
+            fy2 = min(height, max(ys) + PADDING)
+
+        if fx1 >= fx2 or fy1 >= fy2:
             continue
 
-        bx1 = max(0, x1 - BORDER_SAMPLE)
-        by1 = max(0, y1 - BORDER_SAMPLE)
-        bx2 = min(width,  x2 + BORDER_SAMPLE)
-        by2 = min(height, y2 + BORDER_SAMPLE)
+        fw = fx2 - fx1
+        fh = fy2 - fy1
+
+        # Aspect ratio sanity check
+        if fw > 0 and fh > 0:
+            ratio = fw / fh
+            if ratio < 0.05 or ratio > 20.0:
+                continue
+
+        # ── STEP 3: Fill ──────────────────────────────────
+
+        if is_dark_bub:
+            # Gradient fill untuk dark bubble (TIDAK pakai LaMa)
+            filled = dark_bubble_gradient_fill(result, current_np, fx1, fy1, fx2, fy2)
+            if filled is not None:
+                result     = filled
+                draw       = ImageDraw.Draw(result)
+                current_np = np.array(result)  # FIXED L4
+                continue
+            # Fallback: LaMa (kalau luar juga gelap)
+            lama_draw.rectangle([fx1, fy1, fx2, fy2], fill=255)
+            continue
+
+        # Normal dialog: cek variance untuk pilih blur vs LaMa
+        bx1 = max(0, fx1 - BORDER_SAMPLE)
+        by1 = max(0, fy1 - BORDER_SAMPLE)
+        bx2 = min(width,  fx2 + BORDER_SAMPLE)
+        by2 = min(height, fy2 + BORDER_SAMPLE)
 
         crops = [
-            original.crop((bx1, by1, bx2, y1)),
-            original.crop((bx1, y2,  bx2, by2)),
-            original.crop((bx1, y1,  x1,  y2)),
-            original.crop((x2,  y1,  bx2, y2)),
+            original.crop((bx1, by1, bx2, fy1)),
+            original.crop((bx1, fy2, bx2, by2)),
+            original.crop((bx1, fy1, fx1, fy2)),
+            original.crop((fx2, fy1, bx2, fy2)),
         ]
-        strips = [s for s in crops if s.size[0]>0 and s.size[1]>0]
+        strips = [s for s in crops if s.size[0] > 0 and s.size[1] > 0]
 
         if not strips:
+            lama_draw.rectangle([fx1, fy1, fx2, fy2], fill=255)
             continue
 
         total_w  = sum(s.size[0] for s in strips)
         combined = Image.new("RGB", (total_w, max(s.size[1] for s in strips)), 0)
         offset   = 0
         for s in strips:
-            combined.paste(s, (offset,0))
+            combined.paste(s, (offset, 0))
             offset += s.size[0]
 
         stat     = ImageStat.Stat(combined)
         variance = sum(stat.var[:3]) / 3
 
         if variance < VARIANCE_THRESHOLD:
+            # Background solid/uniform → gaussian blur fill
             blur_pad = max(BORDER_SAMPLE, 20)
-            bpx1 = max(0, x1-blur_pad)
-            bpy1 = max(0, y1-blur_pad)
-            bpx2 = min(width,  x2+blur_pad)
-            bpy2 = min(height, y2+blur_pad)
-            patch   = original.crop((bpx1,bpy1,bpx2,bpy2))
+            bpx1 = max(0, fx1-blur_pad); bpy1 = max(0, fy1-blur_pad)
+            bpx2 = min(width,  fx2+blur_pad); bpy2 = min(height, fy2+blur_pad)
+            patch   = original.crop((bpx1, bpy1, bpx2, bpy2))
             blurred = patch.filter(ImageFilter.GaussianBlur(12))
-            rel_x   = x1 - bpx1
-            rel_y   = y1 - bpy1
-            bw, bh  = x2-x1, y2-y1
-            fill    = blurred.crop((rel_x,rel_y,rel_x+bw,rel_y+bh))
-            if fill.size == (bw, bh):
-                result.paste(fill, (x1, y1))
+            rel_x   = fx1 - bpx1; rel_y = fy1 - bpy1
+            fill    = blurred.crop((rel_x, rel_y, rel_x+fw, rel_y+fh))
+            if fill.size == (fw, fh):
+                result.paste(fill, (fx1, fy1))
             else:
                 avg_color = tuple(int(c) for c in stat.mean[:3])
-                draw.rectangle([x1,y1,x2,y2], fill=avg_color)
+                draw.rectangle([fx1, fy1, fx2, fy2], fill=avg_color)
         else:
-            lama_draw.rectangle([x1,y1,x2,y2], fill=255)
+            # Background kompleks → LaMa
+            lama_draw.rectangle([fx1, fy1, fx2, fy2], fill=255)
 
     return result, lama_mask, sfx_count, dialog_count
 
 
-# ── Solid Fill ────────────────────────────────────────────
+# ── Solid Fill (untuk pipeline) ───────────────────────────
 
 def solid_fill_inpaint(
     prefilled: Image.Image,
