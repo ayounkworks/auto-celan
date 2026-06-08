@@ -36,7 +36,7 @@ from core.drive import (
 )
 from core.image_processing import (
     to_bytes, progress_bar, format_eta, get_dynamic_batch_size,
-    smart_clean, validate_inpaint, solid_fill_inpaint,
+    smart_clean, validate_inpaint,
 )
 from core.runpod_client import run_runpod_lama
 
@@ -332,37 +332,29 @@ async def process_image(
                     img_crop  = band_img.crop((cl, ct, cr, cb))
                     mask_crop = band_mask.crop((cl, ct, cr, cb))
 
-                    solid_result = await asyncio.to_thread(
-                        solid_fill_inpaint, img_crop, mask_crop, img_crop, 0, 0
+                    raw_inpaint = await run_runpod_lama(
+                        img_crop, mask_crop,
+                        label=f"{filename}@y{band_y1}",
+                        http_session=_http_session,
                     )
+                    inpaint = validate_inpaint(raw_inpaint, img_crop)
+                    if inpaint is not None:
+                        c_arr   = np.array(img_crop)
+                        m_arr   = np.array(mask_crop)
+                        masked  = c_arr[m_arr > 0]
+                        is_dark = masked.mean() < 80 if masked.size > 0 else False
+                        blur_r  = 2 if is_dark else 4
+                        soft_mc = mask_crop.filter(ImageFilter.GaussianBlur(blur_r))
 
-                    if solid_result is not None:
-                        job_log(job_id, f"    {filename}: solid fill (no RunPod)")
-                        final.paste(solid_result, (cl, band_y1 + ct))
+                        paste_x = cl
+                        paste_y = band_y1 + ct
+                        tmp     = final.copy()
+                        tmp.paste(inpaint, (paste_x, paste_y))
+                        full_sm = Image.new("L", prefilled.size, 0)
+                        full_sm.paste(soft_mc, (paste_x, paste_y))
+                        final.paste(tmp, (0, 0), full_sm)
                     else:
-                        raw_inpaint = await run_runpod_lama(
-                            img_crop, mask_crop,
-                            label=f"{filename}@y{band_y1}",
-                            http_session=_http_session,
-                        )
-                        inpaint = validate_inpaint(raw_inpaint, img_crop)
-                        if inpaint is not None:
-                            c_arr   = np.array(img_crop)
-                            m_arr   = np.array(mask_crop)
-                            masked  = c_arr[m_arr > 0]
-                            is_dark = masked.mean() < 80 if masked.size > 0 else False
-                            blur_r  = 2 if is_dark else 4
-                            soft_mc = mask_crop.filter(ImageFilter.GaussianBlur(blur_r))
-
-                            paste_x = cl
-                            paste_y = band_y1 + ct
-                            tmp     = final.copy()
-                            tmp.paste(inpaint, (paste_x, paste_y))
-                            full_sm = Image.new("L", prefilled.size, 0)
-                            full_sm.paste(soft_mc, (paste_x, paste_y))
-                            final.paste(tmp, (0, 0), full_sm)
-                        else:
-                            job_log(job_id, f"  {filename}@y{band_y1}: inpaint corrupt, skip band")
+                        job_log(job_id, f"  {filename}@y{band_y1}: inpaint corrupt, skip band")
             else:
                 final = prefilled
 

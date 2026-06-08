@@ -24,7 +24,6 @@ from core.config import GOOGLE_API_KEY, MAX_WIDTH
 from core.image_processing import (
     to_bytes, smart_clean,
     validate_inpaint,
-    solid_fill_inpaint,
 )
 
 import core.runpod_client as runpod_module
@@ -99,35 +98,27 @@ async def process_one(
             has_mask = lama_mask.getbbox() is not None
 
             if has_mask:
-                solid_result = await asyncio.to_thread(
-                    solid_fill_inpaint, prefilled, lama_mask, prefilled, 0, 0
-                )
+                try:
+                    raw_inpaint = await asyncio.wait_for(
+                        run_runpod_lama(
+                            prefilled, lama_mask,
+                            label=filename,
+                            http_session=http_session,
+                        ),
+                        timeout=120,
+                    )
+                except asyncio.TimeoutError:
+                    print(f"[TIMEOUT] RunPod timeout untuk {filename}, skip")
+                    prefilled.save(os.path.join(output_dir, filename), quality=95)
+                    return
 
-                if solid_result is not None:
-                    print(f"  {filename}: solid fill, skip RunPod")
-                    final = solid_result
+                inpaint = validate_inpaint(raw_inpaint, prefilled)
+                if inpaint is not None:
+                    soft_mask = lama_mask.filter(ImageFilter.GaussianBlur(7))
+                    final     = prefilled.copy()
+                    final.paste(inpaint, (0, 0), soft_mask)
                 else:
-                    try:
-                        raw_inpaint = await asyncio.wait_for(
-                            run_runpod_lama(
-                                prefilled, lama_mask,
-                                label=filename,
-                                http_session=http_session,
-                            ),
-                            timeout=120,
-                        )
-                    except asyncio.TimeoutError:
-                        print(f"[TIMEOUT] RunPod timeout untuk {filename}, skip")
-                        prefilled.save(os.path.join(output_dir, filename), quality=95)
-                        return
-
-                    inpaint = validate_inpaint(raw_inpaint, prefilled)
-                    if inpaint is not None:
-                        soft_mask = lama_mask.filter(ImageFilter.GaussianBlur(7))
-                        final     = prefilled.copy()
-                        final.paste(inpaint, (0, 0), soft_mask)
-                    else:
-                        raise Exception("Inpaint result corrupt, file skipped")
+                    raise Exception("Inpaint result corrupt, file skipped")
             else:
                 final = prefilled
 

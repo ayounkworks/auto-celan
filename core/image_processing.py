@@ -23,7 +23,7 @@ from core.config import (
     PADDING, MAX_AREA_RATIO, BORDER_SAMPLE, VARIANCE_THRESHOLD,
     DIALOG_BG_MAX_STD, DIALOG_BG_LIGHT, DIALOG_BG_DARK,
     SFX_MIN_AREA_RATIO, SFX_BOX_HEIGHT_MIN, SFX_AREA_PER_CHAR, SFX_VOTE_THRESHOLD,
-    INPAINT_CROP_PAD, SOLID_FILL_STD_THRESHOLD, BUBBLE_EXPAND_DARK,
+    INPAINT_CROP_PAD, BUBBLE_EXPAND_DARK,
 )
 from core.art_protection import is_art_text
 from dataclasses import dataclass
@@ -490,96 +490,7 @@ def smart_clean(
             lama_draw.rectangle([fx1, fy1, fx2, fy2], fill=255)
             continue
 
-        # Normal dialog: cek variance untuk pilih blur vs LaMa
-        bx1 = max(0, fx1 - BORDER_SAMPLE)
-        by1 = max(0, fy1 - BORDER_SAMPLE)
-        bx2 = min(width,  fx2 + BORDER_SAMPLE)
-        by2 = min(height, fy2 + BORDER_SAMPLE)
-
-        crops = [
-            original.crop((bx1, by1, bx2, fy1)),
-            original.crop((bx1, fy2, bx2, by2)),
-            original.crop((bx1, fy1, fx1, fy2)),
-            original.crop((fx2, fy1, bx2, fy2)),
-        ]
-        strips = [s for s in crops if s.size[0] > 0 and s.size[1] > 0]
-
-        if not strips:
-            lama_draw.rectangle([fx1, fy1, fx2, fy2], fill=255)
-            continue
-
-        total_w  = sum(s.size[0] for s in strips)
-        combined = Image.new("RGB", (total_w, max(s.size[1] for s in strips)), 0)
-        offset   = 0
-        for s in strips:
-            combined.paste(s, (offset, 0))
-            offset += s.size[0]
-
-        stat     = ImageStat.Stat(combined)
-        variance = sum(stat.var[:3]) / 3
-
-        if variance < VARIANCE_THRESHOLD:
-            # Background solid/uniform → gaussian blur fill
-            blur_pad = max(BORDER_SAMPLE, 20)
-            bpx1 = max(0, fx1-blur_pad); bpy1 = max(0, fy1-blur_pad)
-            bpx2 = min(width,  fx2+blur_pad); bpy2 = min(height, fy2+blur_pad)
-            patch   = original.crop((bpx1, bpy1, bpx2, bpy2))
-            blurred = patch.filter(ImageFilter.GaussianBlur(12))
-            rel_x   = fx1 - bpx1; rel_y = fy1 - bpy1
-            fill    = blurred.crop((rel_x, rel_y, rel_x+fw, rel_y+fh))
-            if fill.size == (fw, fh):
-                result.paste(fill, (fx1, fy1))
-            else:
-                avg_color = tuple(int(c) for c in stat.mean[:3])
-                draw.rectangle([fx1, fy1, fx2, fy2], fill=avg_color)
-        else:
-            # Background kompleks → LaMa
-            lama_draw.rectangle([fx1, fy1, fx2, fy2], fill=255)
+        # Selalu gunakan LaMa untuk dialog normal/white bubble
+        lama_draw.rectangle([fx1, fy1, fx2, fy2], fill=255)
 
     return result, lama_mask, sfx_count, dialog_count
-
-
-# ── Solid Fill (untuk pipeline) ───────────────────────────
-
-def solid_fill_inpaint(
-    prefilled: Image.Image,
-    mask:      Image.Image,
-    img_crop:  Image.Image,
-    cl: int, ct: int
-) -> Optional[Image.Image]:
-    arr      = np.array(img_crop)
-    mask_arr = np.array(mask.convert("L"))
-    h, w     = mask_arr.shape
-    pad      = min(20, h//4, w//4)
-
-    if pad > 0:
-        mask_pil     = Image.fromarray(mask_arr)
-        mask_dilated = mask_pil.filter(ImageFilter.MaxFilter(size=pad*2+1))
-        border_area  = np.array(mask_dilated) == 0
-    else:
-        border_area  = mask_arr == 0
-
-    if border_area.sum() < 100:
-        return None
-
-    bg_pixels = arr[border_area]
-    bg_mean   = bg_pixels.mean(axis=0)
-    bg_std    = bg_pixels.std()
-
-    if bg_std > SOLID_FILL_STD_THRESHOLD:
-        return None
-
-    mask_interior = arr[mask_arr > 128] if mask_arr.sum() > 0 else np.array([])
-    if mask_interior.size > 0 and float(mask_interior.std()) > 40:
-        return None
-
-    avg_color = tuple(int(c) for c in bg_mean[:3])
-    result    = prefilled.copy()
-
-    mask_full = Image.new("L", prefilled.size, 0)
-    mask_full.paste(mask.convert("L"), (cl, ct))
-
-    res_arr  = np.array(result)
-    mf_arr   = np.array(mask_full)
-    res_arr[mf_arr > 128] = avg_color
-    return Image.fromarray(res_arr)
