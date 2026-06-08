@@ -7,6 +7,7 @@
 import asyncio
 import base64
 import time
+import math
 from io import BytesIO
 from typing import Optional
 
@@ -25,21 +26,22 @@ POLL_INTERVAL   = 0.5
 POLL_MAX        = 160
 
 LAMA_MIN_SIZE = 128
-LAMA_MAX_AREA = 800 * 20000
+TILE_SIZE     = 512
 
 
-def _resize_for_lama(image, mask):
+def _prepare_slice(image, mask):
+    """Pastikan slice kelipatan 8 dengan padding (bukan resizing)."""
     orig_w, orig_h = image.size
-    tw = max(LAMA_MIN_SIZE, (orig_w // 8) * 8)
-    th = max(LAMA_MIN_SIZE, (orig_h // 8) * 8)
+    tw = math.ceil(orig_w / 8) * 8
+    th = math.ceil(orig_h / 8) * 8
 
-    if (tw, th) == (orig_w, orig_h):
-        return image, mask, orig_w, orig_h, False
-    return (
-        image.resize((tw, th), Image.Resampling.LANCZOS),
-        mask.resize((tw, th), Image.Resampling.NEAREST),
-        orig_w, orig_h, True,
-    )
+    padded_img = Image.new("RGB", (tw, th), (255, 255, 255))
+    padded_img.paste(image, (0, 0))
+    
+    padded_mask = Image.new("L", (tw, th), 0)
+    padded_mask.paste(mask, (0, 0))
+    
+    return padded_img, padded_mask, orig_w, orig_h
 
 
 def normalize_b64(data: str):
@@ -109,7 +111,7 @@ def _build_payload(image, mask) -> dict:
 
 
 async def _run_runsync(image, mask, label="", http_session=None) -> Optional[Image.Image]:
-    img_send, mask_send, orig_w, orig_h, was_resized = _resize_for_lama(image, mask)
+    img_send, mask_send, sw, sh = _prepare_slice(image, mask)
     payload = _build_payload(img_send, mask_send)
     headers = {
         "Authorization": f"Bearer {RUNPOD_API_KEY}",
@@ -137,8 +139,8 @@ async def _run_runsync(image, mask, label="", http_session=None) -> Optional[Ima
             if img is None:
                 print(f"[{label}] runsync: output tidak bisa di-decode ({elapsed:.2f}s)")
                 return None
-            if was_resized and img.size != (orig_w, orig_h):
-                img = img.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
+            if img.size != (sw, sh):
+                img = img.crop((0, 0, sw, sh))
             print(f"[{label}] runsync selesai dalam {elapsed:.2f}s")
             return img
         elif status == "FAILED":
@@ -157,7 +159,7 @@ async def _run_runsync(image, mask, label="", http_session=None) -> Optional[Ima
 
 
 async def _run_poll(image, mask, label="", http_session=None) -> Optional[Image.Image]:
-    img_send, mask_send, orig_w, orig_h, was_resized = _resize_for_lama(image, mask)
+    img_send, mask_send, sw, sh = _prepare_slice(image, mask)
     payload = _build_payload(img_send, mask_send)
     headers = {
         "Authorization": f"Bearer {RUNPOD_API_KEY}",
@@ -205,8 +207,8 @@ async def _run_poll(image, mask, label="", http_session=None) -> Optional[Image.
             if img is None:
                 print(f"[{label}] poll: output tidak bisa di-decode ({elapsed:.2f}s)")
                 return None
-            if was_resized and img.size != (orig_w, orig_h):
-                img = img.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
+            if img.size != (sw, sh):
+                img = img.crop((0, 0, sw, sh))
             print(f"[{label}] poll selesai dalam {elapsed:.2f}s")
             return img
         elif status in ("FAILED", "CANCELLED"):
@@ -227,12 +229,45 @@ async def run_runpod_lama(
         async with aiohttp.ClientSession() as session:
             return await run_runpod_lama(image, mask, label, session)
 
-    area = image.width * image.height
-    async with (runpod_sem or asyncio.Lock()):
-        if area >= 800 * 4000:
-            print(f"  [{label}] gambar besar ({image.width}x{image.height}), pakai polling")
-            return await _run_poll(image, mask, label, http_session)
-        result = await _run_runsync(image, mask, label, http_session)
-        if result is not None:
-            return result
-        return await _run_poll(image, mask, label, http_session)
+    orig_w, orig_h = image.size
+    cols = math.ceil(orig_w / TILE_SIZE)
+    rows = math.ceil(orig_h / TILE_SIZE)
+    
+    full_result = image.copy()
+    
+    print(f"[{label}] Memulai grid slicing {rows}x{cols} tiles ({TILE_SIZE}px).")
+
+    for r in range(rows):
+        for c in range(cols):
+            x1, y1 = c * TILE_SIZE, r * TILE_SIZE
+            x2, y2 = min(x1 + TILE_SIZE, orig_w), min(y1 + TILE_SIZE, orig_h)
+            
+            slice_img = image.crop((x1, y1, x2, y2))
+            slice_mask = mask.crop((x1, y1, x2, y2))
+            
+            # Optimasi: Lewati jika tidak ada masker di tile ini
+            if slice_mask.getextrema() == (0, 0):
+                continue
+                
+            print(f"  > Memproses tile ({r},{c}) {slice_img.size[0]}x{slice_img.size[1]}.")
+            
+            async with (runpod_sem or asyncio.Lock()):
+                # Gunakan runsync untuk tile kecil agar cepat, fallback ke poll jika gagal
+                inpainted_tile = await _run_runsync(
+                    slice_img, slice_mask, 
+                    label=f"{label}_t{r}{c}", 
+                    http_session=http_session
+                )
+                
+                if inpainted_tile is None:
+                    inpainted_tile = await _run_poll(
+                        slice_img, slice_mask, 
+                        label=f"{label}_t{r}{c}", 
+                        http_session=http_session
+                    )
+            
+            if inpainted_tile:
+                full_result.paste(inpainted_tile, (x1, y1))
+                
+    print(f"[{label}] Selesai pemrosesan grid slicing.")
+    return full_result

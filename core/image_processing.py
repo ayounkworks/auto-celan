@@ -510,6 +510,6 @@ def smart_clean(
         # Baru kemudian dilasi untuk menutup celah teks
         lama_mask = lama_mask.filter(ImageFilter.MaxFilter(7))
         # Perhalus tepi mask agar transisi inpainting lebih natural (anti-aliasing)
-        lama_mask = lama_mask.filter(ImageFilter.GaussianBlur(radius=4))
+        lama_mask = lama_mask.filter(ImageFilter.GaussianBlur(radius=3))
 
     return result, lama_mask, sfx_count, dialog_count
