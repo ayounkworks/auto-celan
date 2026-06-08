@@ -114,7 +114,7 @@ async def process_one(
 
                 inpaint = validate_inpaint(raw_inpaint, prefilled)
                 if inpaint is not None:
-                    soft_mask = lama_mask.filter(ImageFilter.GaussianBlur(7))
+                    soft_mask = lama_mask.filter(ImageFilter.GaussianBlur(5))
                     final     = prefilled.copy()
                     final.paste(inpaint, (0, 0), soft_mask)
                 else:

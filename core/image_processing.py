@@ -175,7 +175,8 @@ def _expand_bbox_to_bubble(img_np: np.ndarray,
         else:
             break
 
-    return new_x1, new_y1, new_x2, new_y2
+    # Tambahkan safety margin 5px
+    return max(0, new_x1-5), max(0, new_y1-5), min(w-1, new_x2+5), min(h-1, new_y2+5)
 
 
 def _expand_bbox_to_white_bubble(img_np: np.ndarray,
@@ -209,7 +210,9 @@ def _expand_bbox_to_white_bubble(img_np: np.ndarray,
         col = gray[ny1:ny2, min(w-1, x2+dx)]
         if col.size > 0 and col.mean() > threshold: nx2 = min(w-1, x2+dx)
         else: break
-    return nx1, ny1, nx2, ny2
+
+    # Tambahkan safety margin 5px agar mencakup area anti-aliasing teks
+    return max(0, nx1-5), max(0, ny1-5), min(w-1, nx2+5), min(h-1, ny2+5)
 
 # ── Text Merging Logic ────────────────────────────────────
 
@@ -221,7 +224,7 @@ class MergedText:
     x2: int
     y2: int
 
-def _merge_text_blocks(texts, width, height, threshold=40) -> list[MergedText]:
+def _merge_text_blocks(texts, width, height, threshold=55) -> list[MergedText]:
     """
     Menggabungkan bounding box yang berdekatan (dalam jarak threshold pixel).
     Sangat penting agar satu bubble tidak terpecah jadi banyak inpaint kecil.
@@ -492,5 +495,10 @@ def smart_clean(
 
         # Selalu gunakan LaMa untuk dialog normal/white bubble
         lama_draw.rectangle([fx1, fy1, fx2, fy2], fill=255)
+
+    # Final dilation: Pastikan sisa-sisa piksel di pinggir teks tertutup sempurna.
+    # Ini kunci agar inpainting tidak terlihat 'dirty'.
+    if lama_mask.getbbox():
+        lama_mask = lama_mask.filter(ImageFilter.MaxFilter(5))
 
     return result, lama_mask, sfx_count, dialog_count

@@ -343,7 +343,7 @@ async def process_image(
                         m_arr   = np.array(mask_crop)
                         masked  = c_arr[m_arr > 0]
                         is_dark = masked.mean() < 80 if masked.size > 0 else False
-                        blur_r  = 2 if is_dark else 4
+                        blur_r  = 3 if is_dark else 5
                         soft_mc = mask_crop.filter(ImageFilter.GaussianBlur(blur_r))
 
                         paste_x = cl
