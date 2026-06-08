@@ -506,6 +506,20 @@ def smart_clean(original, texts, img_np):
     sfx_count     = 0
     dialog_count  = 0
 
+    # ── INSTRUMENTATION counters ──────────────────────────
+    _elim = {
+        "invalid_bbox":    0,
+        "large_bubble":    0,
+        "sfx":             0,
+        "art":             0,
+        "invalid_fill":    0,
+        "bad_ratio":       0,
+        "dark_gradient":   0,
+        "dark_lama":       0,
+        "dialog":          0,
+    }
+    # ─────────────────────────────────────────────────────
+
     for text in merged_texts:
         # RAW bbox + DETECT_PAD kecil untuk deteksi
         rx1 = max(0, text.x1 - DETECT_PAD)
@@ -514,6 +528,10 @@ def smart_clean(original, texts, img_np):
         ry2 = min(height, text.y2 + DETECT_PAD)
 
         if rx1 >= rx2 or ry1 >= ry2:
+            # [1] bbox invalid
+            _elim["invalid_bbox"] += 1
+            print(f"  [ELIM-1:invalid_bbox] '{text.description[:20]}' "
+                  f"box=({rx1},{ry1},{rx2},{ry2})")
             continue
 
         box_w = rx2 - rx1
@@ -538,19 +556,35 @@ def smart_clean(original, texts, img_np):
                     bg_mean     = float(np.mean(gray))
                     is_solid_bg = bg_std < 45 and (bg_mean > 160 or bg_mean < 60)
                     if not is_solid_bg:
-                        continue  # background kompleks (artwork) → skip
+                        # [2] large bubble validation gagal
+                        _elim["large_bubble"] += 1
+                        print(f"  [ELIM-2:large_bubble] '{text.description[:20]}' "
+                              f"bg_std={bg_std:.1f} bg_mean={bg_mean:.1f} "
+                              f"box_area_ratio={(box_w*box_h)/total_area:.4f}")
+                        continue  # background kompleks (artwork) -> skip
                 else:
+                    _elim["large_bubble"] += 1
+                    print(f"  [ELIM-2:large_bubble] '{text.description[:20]}' "
+                          f"region kosong")
                     continue
 
         # SFX check (hanya kalau bukan bubble jelas)
         if not is_dark_bub and not is_white_bub:
             if is_sfx(current_np, rx1, ry1, rx2, ry2, text.description):
                 sfx_count += 1
+                _elim["sfx"] += 1
+                print(f"  [ELIM-3:sfx] '{text.description[:20]}' "
+                      f"box=({rx1},{ry1},{rx2},{ry2}) "
+                      f"size={box_w}x{box_h}")
                 continue
 
         # Art protection
         if not is_dark_bub and not is_white_bub:
             if is_art_text(current_np, rx1, ry1, rx2, ry2, text.description):
+                _elim["art"] += 1
+                print(f"  [ELIM-4:art] '{text.description[:20]}' "
+                      f"box=({rx1},{ry1},{rx2},{ry2}) "
+                      f"size={box_w}x{box_h}")
                 continue
 
         dialog_count += 1
@@ -575,12 +609,20 @@ def smart_clean(original, texts, img_np):
         fx2 = min(width, fx2); fy2 = min(height, fy2)
 
         if fx1 >= fx2 or fy1 >= fy2:
+            # [5] fill bbox invalid setelah expand
+            _elim["invalid_fill"] += 1
+            print(f"  [ELIM-5:invalid_fill] '{text.description[:20]}' "
+                  f"fill_box=({fx1},{fy1},{fx2},{fy2})")
             continue
 
         fw = fx2 - fx1; fh = fy2 - fy1
         if fw > 0 and fh > 0:
             ratio = fw / fh
             if ratio < 0.05 or ratio > 20.0:
+                # [6] aspect ratio invalid
+                _elim["bad_ratio"] += 1
+                print(f"  [ELIM-6:bad_ratio] '{text.description[:20]}' "
+                      f"ratio={ratio:.2f} fill_box=({fx1},{fy1},{fx2},{fy2})")
                 continue
 
         # Fill
@@ -590,13 +632,36 @@ def smart_clean(original, texts, img_np):
                 result     = filled
                 draw       = ImageDraw.Draw(result)
                 current_np = np.array(result)
+                _elim["dark_gradient"] += 1
+                print(f"  [ELIM-7a:dark_gradient] '{text.description[:20]}' "
+                      f"fill_box=({fx1},{fy1},{fx2},{fy2})")
                 continue
             # Fallback: LaMa
+            _elim["dark_lama"] += 1
+            print(f"  [ELIM-7b:dark_lama] '{text.description[:20]}' "
+                  f"fill_box=({fx1},{fy1},{fx2},{fy2})")
             lama_draw.rectangle([fx1, fy1, fx2, fy2], fill=255)
             continue
 
         lama_draw.rectangle([fx1, fy1, fx2, fy2], fill=255)
         inpaint_boxes.append((fx1, fy1, fx2, fy2))
+        _elim["dialog"] += 1
+
+    # ── INSTRUMENTATION summary ───────────────────────────
+    total_merged = len(merged_texts)
+    total_elim   = sum(v for k, v in _elim.items() if k != "dialog")
+    print(f"\n  [ELIM-SUMMARY] merged={total_merged} | "
+          f"dialog={_elim['dialog']} | "
+          f"dark_gradient={_elim['dark_gradient']} | "
+          f"dark_lama={_elim['dark_lama']} | "
+          f"sfx={_elim['sfx']} | "
+          f"art={_elim['art']} | "
+          f"large_bubble={_elim['large_bubble']} | "
+          f"invalid_bbox={_elim['invalid_bbox']} | "
+          f"invalid_fill={_elim['invalid_fill']} | "
+          f"bad_ratio={_elim['bad_ratio']} | "
+          f"total_eliminated={total_elim}\n")
+    # ─────────────────────────────────────────────────────
 
     # [IP-5] Cleanup lama_mask: hapus noise kecil, tutup celah, perhalus tepi
     if lama_mask.getbbox():

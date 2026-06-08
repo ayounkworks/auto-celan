@@ -302,75 +302,65 @@ async def process_image(
             if has_mask:
                 iw, ih = prefilled.size
                 final  = prefilled.copy()
-                job_log(job_id, f"  {filename}: Memproses {len(inpaint_boxes)} ROI Inpaint.")
 
-                for idx, (bx1, by1, bx2, by2) in enumerate(inpaint_boxes):
-                    # [PL-3] Adaptive crop padding
-                    img_crop_result = get_inpaint_crop(
-                        prefilled, lama_mask,
-                        pad=INPAINT_CROP_PAD
-                    )
+                # Satu crop per page — bounding box seluruh lama_mask
+                img_crop_result = get_inpaint_crop(
+                    prefilled, lama_mask,
+                    pad=INPAINT_CROP_PAD
+                )
 
-                    if img_crop_result is None:
-                        continue
-
+                if img_crop_result is not None:
                     img_crop, mask_crop, (cx1, cy1, cx2, cy2) = img_crop_result
-
-                    if mask_crop.getextrema() == (0, 0):
-                        continue
 
                     crop_area  = (cx2 - cx1) * (cy2 - cy1)
                     page_area  = iw * ih
                     crop_ratio = crop_area / page_area
                     crop_pct   = 100 * crop_ratio
 
-                    if crop_ratio < 0.005:
-                        continue
-
                     # [PL-4] Log crop size
                     job_log(job_id,
-                        f"  {filename}_roi{idx}: crop {cx2-cx1}x{cy2-cy1}px "
+                        f"  {filename}: crop {cx2-cx1}x{cy2-cy1}px "
                         f"({crop_pct:.1f}% of page)"
                     )
 
-                    # [PL-1] Solid fill check — skip RunPod kalau area uniform
-                    solid_result = await asyncio.to_thread(
-                        solid_fill_inpaint, prefilled, mask_crop, img_crop, cx1, cy1
-                    )
-                    if solid_result is not None:
-                        job_log(job_id, f"  {filename}_roi{idx}: solid fill, skip RunPod")
-                        final = solid_result
-                        continue
-
-                    # [PL-2] Resize kalau crop terlalu besar untuk RunPod
-                    img_send, mask_send, was_resized, orig_w, orig_h = \
-                        _maybe_resize_for_runpod(img_crop, mask_crop)
-
-                    if was_resized:
-                        job_log(job_id,
-                            f"  {filename}_roi{idx}: resize {orig_w}x{orig_h} → "
-                            f"{img_send.width}x{img_send.height} sebelum RunPod"
+                    if crop_ratio >= 0.005 and mask_crop.getextrema() != (0, 0):
+                        # [PL-1] Solid fill check — skip RunPod kalau area uniform
+                        solid_result = await asyncio.to_thread(
+                            solid_fill_inpaint, prefilled, mask_crop, img_crop, cx1, cy1
                         )
+                        if solid_result is not None:
+                            job_log(job_id, f"  {filename}: solid fill, skip RunPod")
+                            final = solid_result
+                        else:
+                            # [PL-2] Resize kalau crop terlalu besar untuk RunPod
+                            img_send, mask_send, was_resized, orig_w, orig_h = \
+                                _maybe_resize_for_runpod(img_crop, mask_crop)
 
-                    raw_inpaint = await run_runpod_lama(
-                        img_send, mask_send,
-                        label=f"{filename}_roi{idx}",
-                        http_session=_http_session,
-                    )
+                            if was_resized:
+                                job_log(job_id,
+                                    f"  {filename}: resize {orig_w}x{orig_h} → "
+                                    f"{img_send.width}x{img_send.height} sebelum RunPod"
+                                )
 
-                    # Upscale hasil balik ke ukuran crop original
-                    if was_resized and raw_inpaint is not None:
-                        raw_inpaint = raw_inpaint.resize((orig_w, orig_h), Image.LANCZOS)
+                            raw_inpaint = await run_runpod_lama(
+                                img_send, mask_send,
+                                label=filename,
+                                http_session=_http_session,
+                            )
 
-                    inpaint = validate_inpaint(raw_inpaint, img_crop)
-                    if inpaint is not None:
-                        blur_r  = 5
-                        soft_mc = mask_crop.filter(ImageFilter.GaussianBlur(blur_r))
-                        roi_result = prefilled.crop((cx1, cy1, cx2, cy2))
-                        roi_result.paste(inpaint, (0, 0))
-                        final.paste(roi_result, (cx1, cy1), soft_mc)
-                    else:
-                        job_log(job_id, f"  {filename}_roi{idx}: inpaint corrupt, skip")
+                            # Upscale hasil balik ke ukuran crop original
+                            if was_resized and raw_inpaint is not None:
+                                raw_inpaint = raw_inpaint.resize((orig_w, orig_h), Image.LANCZOS)
+
+                            inpaint = validate_inpaint(raw_inpaint, img_crop)
+                            if inpaint is not None:
+                                blur_r  = 5
+                                soft_mc = mask_crop.filter(ImageFilter.GaussianBlur(blur_r))
+                                roi_patch = prefilled.crop((cx1, cy1, cx2, cy2))
+                                roi_patch.paste(inpaint, (0, 0))
+                                final.paste(roi_patch, (cx1, cy1), soft_mc)
+                            else:
+                                job_log(job_id, f"  {filename}: inpaint corrupt, skip")
             else:
                 final = prefilled
 
