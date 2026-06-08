@@ -1,18 +1,21 @@
 # ============================================================
 # core/pipeline.py
-# FIXED v4:
-# - BUG_AUTODELETE: asyncio.create_task di loop yang salah
-#   Pipeline jalan di loop baru (thread), auto-delete harus
-#   dijadwalkan di main bot loop via schedule_folder_delete()
-# - BUG3: Closure bug fetch_vision (default arg)
-# - BUG5: Hapus input_folder_name tidak terpakai
-# - BUG7: Limit log 100 entry
-# - INPAINT: Tambah db_schedule_deletion sebagai backup delete
+# v5 — Integrasikan solid_fill + adaptive crop dari zip:
+#
+# [PL-1] Solid fill sebelum RunPod: skip GPU untuk area uniform
+#        Diambil dari zip [PROD-5] — bubble solid langsung fill
+# [PL-2] Adaptive crop: resize ROI besar sebelum kirim ke RunPod
+#        Diambil dari zip [PROD-1] — eliminasi OOM untuk ROI >1MP
+# [PL-3] get_inpaint_crop() dengan adaptive pad
+#        Diambil dari zip [FIX-3/FIX-10]
+# [PL-4] Log crop size untuk monitoring VRAM (zip [FIX-6])
+# [PL-5] Import solid_fill_inpaint + get_inpaint_crop dari image_processing
 # ============================================================
 
 import gc
 import io
 import json
+import math
 import time
 import asyncio
 import traceback
@@ -24,7 +27,7 @@ import numpy as np
 from PIL import Image, ImageFilter
 from google.cloud import vision
 
-from core.config import MAX_WIDTH, DRIVE_OUTPUT_FOLDER_ID, INPAINT_CROP_PAD
+from core.config import MAX_WIDTH, DRIVE_OUTPUT_FOLDER_ID, INPAINT_CROP_PAD, MAX_RUNPOD_PIXELS
 from core.database import (
     db_get_job, db_update_job, db_append_log, db_mark_file_processed,
     db_get_processed_files, db_schedule_deletion, db_increment_completed,
@@ -36,7 +39,7 @@ from core.drive import (
 )
 from core.image_processing import (
     to_bytes, progress_bar, format_eta, get_dynamic_batch_size,
-    smart_clean, validate_inpaint,
+    smart_clean, validate_inpaint, solid_fill_inpaint, get_inpaint_crop,
 )
 from core.runpod_client import run_runpod_lama
 
@@ -53,7 +56,6 @@ SLICE_HEIGHT   = 1500
 SLICE_OVERLAP  = 200
 
 OUTPUT_DELETE_DELAY_MINUTES = 15
-
 LOG_MAX_ENTRIES = 100
 
 
@@ -104,18 +106,17 @@ def _detect_text_sliced(image: Image.Image, vc) -> list:
 
         for ann in annotations[1:]:
             verts = ann.bounding_poly.vertices
-            xs    = [v.x       for v in verts]
-            ys    = [v.y + y   for v in verts]
+            xs    = [v.x for v in verts]
+            ys    = [v.y + y for v in verts]
 
-            # Gunakan resolusi dedup yang lebih tinggi (5px) agar teks rapat tidak hilang
             dedup_key = (ann.description, min(xs) // 5, min(ys) // 5)
             if dedup_key in seen_texts:
                 continue
             seen_texts.add(dedup_key)
 
             new_ann = _Ann(
-                desc = ann.description,
-                bp   = _BP([_V(xs[i], ys[i]) for i in range(len(verts))])
+                desc=ann.description,
+                bp=_BP([_V(xs[i], ys[i]) for i in range(len(verts))])
             )
             all_annotations.append(new_ann)
 
@@ -166,7 +167,6 @@ async def warmup(job_id=None):
 
         try:
             from PIL import Image as _Image
-            import io as _io
             import base64 as _b64
             from core.config import RUNPOD_API_KEY, RUNPOD_ENDPOINT_ID
 
@@ -174,7 +174,7 @@ async def warmup(job_id=None):
             tiny_mask = _Image.new("L",   (128, 128), color=0)
 
             def _to_b64(img, fmt):
-                buf = _io.BytesIO()
+                buf = io.BytesIO()
                 img.save(buf, format=fmt)
                 return _b64.b64encode(buf.getvalue()).decode()
 
@@ -189,7 +189,7 @@ async def warmup(job_id=None):
                 "Content-Type":  "application/json",
             }
 
-            t0 = __import__("time").time()
+            t0 = time.time()
             try:
                 async with _http_session.post(
                     f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/runsync",
@@ -197,7 +197,7 @@ async def warmup(job_id=None):
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=60),
                 ) as r:
-                    elapsed = __import__("time").time() - t0
+                    elapsed = time.time() - t0
                     status  = (await r.json()).get("status", "?") if r.status == 200 else f"HTTP {r.status}"
                     done_msg = f"✅ RunPod warm ({elapsed:.1f}s) — status: {status}"
             except asyncio.TimeoutError:
@@ -219,25 +219,30 @@ async def warmup(job_id=None):
             _runpod_warmed = True
 
 
-# ── Auto-Delete ───────────────────────────────────────────
+# ── [PL-2] Resize crop sebelum kirim ke RunPod ────────────
 
-async def _auto_delete_output(folder_id: str, folder_name: str,
-                               delay_minutes: int = OUTPUT_DELETE_DELAY_MINUTES):
+def _maybe_resize_for_runpod(
+    img_crop:  Image.Image,
+    mask_crop: Image.Image,
+) -> tuple[Image.Image, Image.Image, bool, int, int]:
     """
-    Hapus output folder setelah delay_minutes.
-    Dipanggil dari deletion_loop() di main bot event loop.
+    Kalau crop terlalu besar (> MAX_RUNPOD_PIXELS), resize dulu.
+    Return (img_resized, mask_resized, was_resized, orig_w, orig_h).
+    Caller harus upscale hasil balik ke ukuran original sebelum paste.
     """
-    print(f"⏰ Output '{folder_name}' akan dihapus dalam {delay_minutes} menit")
-    await asyncio.sleep(delay_minutes * 60)
-    try:
-        success = await asyncio.to_thread(delete_folder, folder_id)
-        if success:
-            db_remove_pending_deletion(folder_id)
-            print(f"🗑️ Auto-deleted output: {folder_name} ({folder_id})")
-        else:
-            print(f"❌ Gagal hapus output: {folder_name} ({folder_id})")
-    except Exception as e:
-        print(f"❌ Auto-delete error: {e}")
+    orig_w, orig_h = img_crop.size
+    orig_pixels    = orig_w * orig_h
+    was_resized    = False
+
+    if orig_pixels > MAX_RUNPOD_PIXELS:
+        scale     = (MAX_RUNPOD_PIXELS / orig_pixels) ** 0.5
+        new_w     = max(64, (int(orig_w * scale) // 8) * 8)   # LaMa butuh kelipatan 8
+        new_h     = max(64, (int(orig_h * scale) // 8) * 8)
+        img_crop  = img_crop.resize((new_w, new_h), Image.LANCZOS)
+        mask_crop = mask_crop.resize((new_w, new_h), Image.NEAREST)
+        was_resized = True
+
+    return img_crop, mask_crop, was_resized, orig_w, orig_h
 
 
 # ── Process Single Image ──────────────────────────────────
@@ -296,38 +301,73 @@ async def process_image(
 
             if has_mask:
                 iw, ih = prefilled.size
-                final     = prefilled.copy()
+                final  = prefilled.copy()
                 job_log(job_id, f"  {filename}: Memproses {len(inpaint_boxes)} ROI Inpaint.")
 
                 for idx, (bx1, by1, bx2, by2) in enumerate(inpaint_boxes):
-                    # Gunakan padding untuk konteks inpainting
-                    PAD = 40
-                    cx1 = max(0,  bx1 - PAD)
-                    cy1 = max(0,  by1 - PAD)
-                    cx2 = min(iw, bx2 + PAD)
-                    cy2 = min(ih, by2 + PAD)
+                    # [PL-3] Adaptive crop padding
+                    img_crop_result = get_inpaint_crop(
+                        prefilled, lama_mask,
+                        pad=INPAINT_CROP_PAD
+                    )
 
-                    img_crop  = prefilled.crop((cx1, cy1, cx2, cy2))
-                    mask_crop = lama_mask.crop((cx1, cy1, cx2, cy2))
+                    if img_crop_result is None:
+                        continue
+
+                    img_crop, mask_crop, (cx1, cy1, cx2, cy2) = img_crop_result
 
                     if mask_crop.getextrema() == (0, 0):
                         continue
 
+                    crop_area  = (cx2 - cx1) * (cy2 - cy1)
+                    page_area  = iw * ih
+                    crop_ratio = crop_area / page_area
+                    crop_pct   = 100 * crop_ratio
+
+                    if crop_ratio < 0.005:
+                        continue
+
+                    # [PL-4] Log crop size
+                    job_log(job_id,
+                        f"  {filename}_roi{idx}: crop {cx2-cx1}x{cy2-cy1}px "
+                        f"({crop_pct:.1f}% of page)"
+                    )
+
+                    # [PL-1] Solid fill check — skip RunPod kalau area uniform
+                    solid_result = await asyncio.to_thread(
+                        solid_fill_inpaint, prefilled, mask_crop, img_crop, cx1, cy1
+                    )
+                    if solid_result is not None:
+                        job_log(job_id, f"  {filename}_roi{idx}: solid fill, skip RunPod")
+                        final = solid_result
+                        continue
+
+                    # [PL-2] Resize kalau crop terlalu besar untuk RunPod
+                    img_send, mask_send, was_resized, orig_w, orig_h = \
+                        _maybe_resize_for_runpod(img_crop, mask_crop)
+
+                    if was_resized:
+                        job_log(job_id,
+                            f"  {filename}_roi{idx}: resize {orig_w}x{orig_h} → "
+                            f"{img_send.width}x{img_send.height} sebelum RunPod"
+                        )
+
                     raw_inpaint = await run_runpod_lama(
-                        img_crop, mask_crop,
+                        img_send, mask_send,
                         label=f"{filename}_roi{idx}",
                         http_session=_http_session,
                     )
+
+                    # Upscale hasil balik ke ukuran crop original
+                    if was_resized and raw_inpaint is not None:
+                        raw_inpaint = raw_inpaint.resize((orig_w, orig_h), Image.LANCZOS)
+
                     inpaint = validate_inpaint(raw_inpaint, img_crop)
                     if inpaint is not None:
-                        # Gunakan soft mask untuk blending halus
                         blur_r  = 5
                         soft_mc = mask_crop.filter(ImageFilter.GaussianBlur(blur_r))
-                        
                         roi_result = prefilled.crop((cx1, cy1, cx2, cy2))
                         roi_result.paste(inpaint, (0, 0))
-                        
-                        # Paste kembali menggunakan soft mask di koordinat crop semula
                         final.paste(roi_result, (cx1, cy1), soft_mc)
                     else:
                         job_log(job_id, f"  {filename}_roi{idx}: inpaint corrupt, skip")
@@ -363,8 +403,8 @@ async def process_image(
         if job_id in jobs:
             jobs[job_id]["completed_files"] = completed
 
-        row      = db_get_job(job_id)
-        failed   = json.loads(row["failed_files"] or "[]")
+        row    = db_get_job(job_id)
+        failed = json.loads(row["failed_files"] or "[]")
         failed.append(filename)
         db_update_job(job_id, failed_files=json.dumps(failed))
         db_mark_file_processed(job_id, filename, "failed", duration)
@@ -384,8 +424,8 @@ async def process_image(
 
 
 async def _save_output(out_buf, filename, output_folder_id, local_output_dir):
+    import os
     if local_output_dir:
-        import os
         out_path = os.path.join(local_output_dir, filename)
         with open(out_path, "wb") as f:
             f.write(out_buf.getvalue())
@@ -510,8 +550,8 @@ async def pipeline(job_id: str, folder_url: str):
                 img_and_texts = _vr if _vr is not None else img_and_texts
 
                 if img_and_texts is None:
-                    row      = db_get_job(job_id)
-                    failed   = json.loads(row["failed_files"] or "[]")
+                    row    = db_get_job(job_id)
+                    failed = json.loads(row["failed_files"] or "[]")
                     failed.append(f["name"])
                     db_update_job(job_id, failed_files=json.dumps(failed))
                     db_mark_file_processed(job_id, f["name"], "failed", 0)
@@ -535,9 +575,9 @@ async def pipeline(job_id: str, folder_url: str):
             file_times.append(batch_time / max(len(batch), 1))
 
             for r in results:
-                if r == "success":   success_count += 1
-                elif r == "failed":  failed_count  += 1
-                elif r == "skip":    skip_count    += 1
+                if r == "success":  success_count += 1
+                elif r == "failed": failed_count  += 1
+                elif r == "skip":   skip_count    += 1
 
             if file_times:
                 avg         = sum(file_times) / len(file_times)
@@ -546,7 +586,7 @@ async def pipeline(job_id: str, folder_url: str):
                 if job_id in jobs:
                     jobs[job_id]["eta"] = format_eta(eta_seconds)
 
-        # ── Finalize ──
+        # Finalize
         current_status = db_get_job(job_id)["status"]
         if current_status not in ("cancelled",):
             all_failed   = (failed_count > 0 and success_count == 0 and skip_count == 0)
@@ -560,7 +600,6 @@ async def pipeline(job_id: str, folder_url: str):
                 jobs[job_id]["status"]      = final_status
                 jobs[job_id]["finished_at"] = datetime.now().isoformat()
 
-        # ── FIXED AUTO-DELETE: Simpan ke DB, deletion_loop di main bot loop yang eksekusi ──
         if output_folder_id:
             db_schedule_deletion(output_folder_id)
             delete_at = datetime.utcnow() + timedelta(minutes=OUTPUT_DELETE_DELAY_MINUTES)
@@ -610,14 +649,10 @@ async def run_pipeline(job_id: str, folder_url: str):
         await pipeline(job_id, folder_url)
 
 
-# ── Auto-Delete Loop (jalan di main bot event loop) ───────
-# FIXED: deletion_loop berjalan di event loop bot (main),
-# bukan di thread pipeline. Ini yang memastikan delete terjadi.
-
 async def deletion_loop():
     from core.database import db_get_pending_deletions, db_remove_pending_deletion
     while True:
-        await asyncio.sleep(60)  # cek setiap menit
+        await asyncio.sleep(60)
         try:
             for folder_id in db_get_pending_deletions():
                 success = await asyncio.to_thread(delete_folder, folder_id)

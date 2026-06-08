@@ -28,7 +28,11 @@ def generate_token():
     with open('token_drive.json', 'w', encoding='utf-8') as f:
         json.dump(token_data, f, indent=4)
     
-    print("✅ Berhasil! File 'token_drive.json' (format teks) telah dibuat. Sekarang kamu bisa melakukan git push.")
+    print("✅ Berhasil! File 'token_drive.json' telah dibuat.")
+    print("\n📋 Salin baris di bawah ini untuk Environment Variable 'DRIVE_TOKEN_JSON' di Railway:")
+    print("---")
+    print(json.dumps(token_data))
+    print("---\n")
 
 if __name__ == '__main__':
     generate_token()
