@@ -175,7 +175,7 @@ def _expand_bbox_to_bubble(img_np: np.ndarray,
         else:
             break
 
-    # Tambahkan safety margin 5px
+    # Tambahkan safety margin agar mencakup sisa piksel teks di pinggiran
     return max(0, new_x1-5), max(0, new_y1-5), min(w-1, new_x2+5), min(h-1, new_y2+5)
 
 
@@ -241,6 +241,9 @@ def _merge_text_blocks(texts, width, height, threshold=55) -> list[MergedText]:
             x2=max(p.x for p in v), y2=max(p.y for p in v)
         ))
 
+    # Sort berdasarkan posisi Y lalu X agar penggabungan lebih teratur
+    items.sort(key=lambda i: (i.y1, i.x1))
+
     merged = True
     while merged:
         merged = False
@@ -250,8 +253,12 @@ def _merge_text_blocks(texts, width, height, threshold=55) -> list[MergedText]:
             found_neighbor = False
             for i, other in enumerate(new_items):
                 # Cek jika kotak berdekatan (dengan toleransi threshold)
-                if not (curr.x1 > other.x2 + threshold or curr.x2 < other.x1 - threshold or
-                        curr.y1 > other.y2 + threshold or curr.y2 < other.y1 - threshold):
+                # Gunakan threshold yang lebih longgar untuk sumbu Y (vertikal) pada manga
+                v_threshold = int(threshold * 1.5)
+                h_threshold = threshold
+
+                if not (curr.x1 > other.x2 + h_threshold or curr.x2 < other.x1 - h_threshold or
+                        curr.y1 > other.y2 + v_threshold or curr.y2 < other.y1 - v_threshold):
                     # Gabungkan koordinat
                     other.x1 = min(other.x1, curr.x1)
                     other.y1 = min(other.y1, curr.y1)
@@ -496,9 +503,13 @@ def smart_clean(
         # Selalu gunakan LaMa untuk dialog normal/white bubble
         lama_draw.rectangle([fx1, fy1, fx2, fy2], fill=255)
 
-    # Final dilation: Pastikan sisa-sisa piksel di pinggir teks tertutup sempurna.
-    # Ini kunci agar inpainting tidak terlihat 'dirty'.
+    # Bersihkan masker dari noise kecil (misal deteksi titik/debu yang tidak perlu di-inpaint)
     if lama_mask.getbbox():
-        lama_mask = lama_mask.filter(ImageFilter.MaxFilter(5))
+        # Hapus area putih yang luasnya kurang dari 10 piksel
+        lama_mask = lama_mask.filter(ImageFilter.MinFilter(3))
+        # Baru kemudian dilasi untuk menutup celah teks
+        lama_mask = lama_mask.filter(ImageFilter.MaxFilter(7))
+        # Perhalus tepi mask agar transisi inpainting lebih natural (anti-aliasing)
+        lama_mask = lama_mask.filter(ImageFilter.GaussianBlur(radius=4))
 
     return result, lama_mask, sfx_count, dialog_count

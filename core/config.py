@@ -45,7 +45,7 @@ SFX_AREA_PER_CHAR   = 4000
 SFX_VOTE_THRESHOLD  = 2
 
 # Inpainting crop
-INPAINT_CROP_PAD    = 180
+INPAINT_CROP_PAD    = 150
 INPAINT_MIN_RATIO   = 0.005
 
 # Solid fill detection

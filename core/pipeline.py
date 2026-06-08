@@ -50,7 +50,7 @@ _runpod_warmed = False
 jobs           = {}
 
 SLICE_HEIGHT   = 1500
-SLICE_OVERLAP  = 150
+SLICE_OVERLAP  = 200
 
 OUTPUT_DELETE_DELAY_MINUTES = 15
 
@@ -343,7 +343,7 @@ async def process_image(
                         m_arr   = np.array(mask_crop)
                         masked  = c_arr[m_arr > 0]
                         is_dark = masked.mean() < 80 if masked.size > 0 else False
-                        blur_r  = 3 if is_dark else 5
+                        blur_r  = 5 if is_dark else 7
                         soft_mc = mask_crop.filter(ImageFilter.GaussianBlur(blur_r))
 
                         paste_x = cl

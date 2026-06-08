@@ -25,20 +25,14 @@ POLL_INTERVAL   = 0.5
 POLL_MAX        = 160
 
 LAMA_MIN_SIZE = 128
-LAMA_MAX_AREA = 800 * 3000
+LAMA_MAX_AREA = 800 * 20000
 
 
 def _resize_for_lama(image, mask):
     orig_w, orig_h = image.size
-    area = orig_w * orig_h
-    if area > LAMA_MAX_AREA:
-        scale = (LAMA_MAX_AREA / area) ** 0.5
-        tw = max(LAMA_MIN_SIZE, int(orig_w * scale // 8) * 8)
-        th = max(LAMA_MIN_SIZE, int(orig_h * scale // 8) * 8)
-        print(f"  [LaMa resize] {orig_w}×{orig_h} → {tw}×{th}")
-    else:
-        tw = max(LAMA_MIN_SIZE, (orig_w // 8) * 8)
-        th = max(LAMA_MIN_SIZE, (orig_h // 8) * 8)
+    tw = max(LAMA_MIN_SIZE, (orig_w // 8) * 8)
+    th = max(LAMA_MIN_SIZE, (orig_h // 8) * 8)
+
     if (tw, th) == (orig_w, orig_h):
         return image, mask, orig_w, orig_h, False
     return (
