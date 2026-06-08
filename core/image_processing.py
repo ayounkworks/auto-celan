@@ -26,7 +26,7 @@ from core.config import (
     INPAINT_CROP_PAD, SOLID_FILL_STD_THRESHOLD, BUBBLE_EXPAND_DARK,
 )
 from core.art_protection import is_art_text
-
+from dataclasses import dataclass
 
 def to_bytes(img, fmt="JPEG", quality=90) -> io.BytesIO:
     buffer = io.BytesIO()
@@ -178,6 +178,91 @@ def _expand_bbox_to_bubble(img_np: np.ndarray,
     return new_x1, new_y1, new_x2, new_y2
 
 
+def _expand_bbox_to_white_bubble(img_np: np.ndarray,
+                                x1: int, y1: int, x2: int, y2: int,
+                                max_expand: int = 60) -> Tuple[int,int,int,int]:
+    """
+    Ekspansi untuk bubble putih. Berhenti saat menemukan pixel yang 
+    cukup gelap (garis tepi bubble).
+    """
+    h, w = img_np.shape[:2]
+    gray = img_np.mean(axis=2)
+    threshold = 180 # Cari area yang mulai gelap (tepi bubble)
+
+    ny1 = y1
+    for dy in range(1, max_expand):
+        row = gray[max(0, y1-dy), max(0,x1):min(w,x2)]
+        if row.size > 0 and row.mean() > threshold: ny1 = max(0, y1-dy)
+        else: break
+    ny2 = y2
+    for dy in range(1, max_expand):
+        row = gray[min(h-1, y2+dy), max(0,x1):min(w,x2)]
+        if row.size > 0 and row.mean() > threshold: ny2 = min(h-1, y2+dy)
+        else: break
+    nx1 = x1
+    for dx in range(1, max_expand):
+        col = gray[ny1:ny2, max(0, x1-dx)]
+        if col.size > 0 and col.mean() > threshold: nx1 = max(0, x1-dx)
+        else: break
+    nx2 = x2
+    for dx in range(1, max_expand):
+        col = gray[ny1:ny2, min(w-1, x2+dx)]
+        if col.size > 0 and col.mean() > threshold: nx2 = min(w-1, x2+dx)
+        else: break
+    return nx1, ny1, nx2, ny2
+
+# ── Text Merging Logic ────────────────────────────────────
+
+@dataclass
+class MergedText:
+    description: str
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+
+def _merge_text_blocks(texts, width, height, threshold=40) -> list[MergedText]:
+    """
+    Menggabungkan bounding box yang berdekatan (dalam jarak threshold pixel).
+    Sangat penting agar satu bubble tidak terpecah jadi banyak inpaint kecil.
+    """
+    if not texts or len(texts) <= 1:
+        return []
+
+    items = []
+    for text in texts[1:]: # Skip index 0 (full text)
+        v = text.bounding_poly.vertices
+        items.append(MergedText(
+            description=text.description,
+            x1=min(p.x for p in v), y1=min(p.y for p in v),
+            x2=max(p.x for p in v), y2=max(p.y for p in v)
+        ))
+
+    merged = True
+    while merged:
+        merged = False
+        new_items = []
+        while items:
+            curr = items.pop(0)
+            found_neighbor = False
+            for i, other in enumerate(new_items):
+                # Cek jika kotak berdekatan (dengan toleransi threshold)
+                if not (curr.x1 > other.x2 + threshold or curr.x2 < other.x1 - threshold or
+                        curr.y1 > other.y2 + threshold or curr.y2 < other.y1 - threshold):
+                    # Gabungkan koordinat
+                    other.x1 = min(other.x1, curr.x1)
+                    other.y1 = min(other.y1, curr.y1)
+                    other.x2 = max(other.x2, curr.x2)
+                    other.y2 = max(other.y2, curr.y2)
+                    other.description += " " + curr.description
+                    found_neighbor = True
+                    merged = True
+                    break
+            if not found_neighbor:
+                new_items.append(curr)
+        items = new_items
+    return items
+
 # ── Bubble Detection ──────────────────────────────────────
 
 def _is_dark_bubble(img_np: np.ndarray,
@@ -318,6 +403,9 @@ def smart_clean(
     # FIXED L4: current_np di-update setelah setiap fill
     current_np = img_np.copy()
 
+    # MERGE BOXES: Gabungkan teks yang berdekatan agar diproses sebagai 1 bubble
+    merged_texts = _merge_text_blocks(texts, width, height)
+
     sfx_count    = 0
     dialog_count = 0
 
@@ -325,21 +413,13 @@ def smart_clean(
     # besar padding (PADDING=80px) hanya untuk fill
     DETECT_PAD = min(15, max(5, PADDING // 5))
 
-    for text in texts[1:]:
-        vertices = text.bounding_poly.vertices
-        xs = [v.x for v in vertices]
-        ys = [v.y for v in vertices]
-
+    for text in merged_texts:
         # RAW bbox dari Vision API (+ small padding untuk detection)
-        rx1 = max(0, min(xs) - DETECT_PAD)
-        ry1 = max(0, min(ys) - DETECT_PAD)
-        rx2 = min(width,  max(xs) + DETECT_PAD)
-        ry2 = min(height, max(ys) + DETECT_PAD)
+        rx1, ry1 = max(0, text.x1 - DETECT_PAD), max(0, text.y1 - DETECT_PAD)
+        rx2, ry2 = min(width, text.x2 + DETECT_PAD), min(height, text.y2 + DETECT_PAD)
 
         if rx1 >= rx2 or ry1 >= ry2:
             continue
-
-        text_str = text.description if hasattr(text, 'description') else ""
 
         # ── STEP 1: Deteksi tipe teks/bubble ─────────────
         # Semua deteksi pakai RAW bbox (FIXED L1, L2)
@@ -349,13 +429,13 @@ def smart_clean(
 
         # SFX check — hanya kalau bukan bubble
         if not is_dark_bub and not is_white_bub:
-            if is_sfx(current_np, rx1, ry1, rx2, ry2, text_str):
+            if is_sfx(current_np, rx1, ry1, rx2, ry2, text.description):
                 sfx_count += 1
                 continue
 
         # Art protection — hanya kalau bukan bubble (FIXED L2)
         if not is_dark_bub and not is_white_bub:
-            if is_art_text(current_np, rx1, ry1, rx2, ry2, text_str):
+            if is_art_text(current_np, rx1, ry1, rx2, ry2, text.description):
                 continue
 
         dialog_count += 1
@@ -370,12 +450,19 @@ def smart_clean(
             )
             fx1 = max(0, fx1); fy1 = max(0, fy1)
             fx2 = min(width, fx2); fy2 = min(height, fy2)
+        elif is_white_bub:
+            # Gunakan ekspansi cerdas untuk white bubble agar tidak 'makan' art
+            fx1, fy1, fx2, fy2 = _expand_bbox_to_white_bubble(
+                current_np, rx1, ry1, rx2, ry2
+            )
         else:
-            # Normal dialog: gunakan PADDING penuh untuk fill
-            fx1 = max(0, min(xs) - PADDING)
-            fy1 = max(0, min(ys) - PADDING)
-            fx2 = min(width,  max(xs) + PADDING)
-            fy2 = min(height, max(ys) + PADDING)
+            # Jika bukan bubble (teks melayang), gunakan padding kecil (25-30px)
+            # Padding 80px terlalu merusak background art
+            SMALL_PAD = 30
+            fx1 = max(0, text.x1 - SMALL_PAD)
+            fy1 = max(0, text.y1 - SMALL_PAD)
+            fx2 = min(width,  text.x2 + SMALL_PAD)
+            fy2 = min(height, text.y2 + SMALL_PAD)
 
         if fx1 >= fx2 or fy1 >= fy2:
             continue

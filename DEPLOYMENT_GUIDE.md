@@ -12,12 +12,14 @@ Laptop kamu cuma kirim 1 request kecil → tunggu selesai.
 
 ```bash
 # Di folder project
-git init
+git init -b main
 git add .
 git commit -m "initial"
-git branch -M main  # Memastikan branch utama adalah main, bukan master
 
-# Buat repo baru di github.com, lalu:
+# Jika branch masih 'master', paksa ke 'main':
+git branch -M main
+
+# Hubungkan ke repo GitHub (ganti USERNAME)
 git remote add origin https://github.com/USERNAME/auto-celan.git
 git push -u origin main --force
 ```

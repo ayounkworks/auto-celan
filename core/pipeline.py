@@ -107,7 +107,8 @@ def _detect_text_sliced(image: Image.Image, vc) -> list:
             xs    = [v.x       for v in verts]
             ys    = [v.y + y   for v in verts]
 
-            dedup_key = (ann.description, min(xs) // 15, min(ys) // 15)
+            # Gunakan resolusi dedup yang lebih tinggi (5px) agar teks rapat tidak hilang
+            dedup_key = (ann.description, min(xs) // 5, min(ys) // 5)
             if dedup_key in seen_texts:
                 continue
             seen_texts.add(dedup_key)
