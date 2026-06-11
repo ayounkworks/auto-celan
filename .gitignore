@@ -1,0 +1,24 @@
+# Secrets — JANGAN commit ke git
+.env
+token_drive.json
+credentials.json
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Local folders
+input/
+output/
+
+# OS
+.DS_Store
+Thumbs.db
