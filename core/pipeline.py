@@ -622,6 +622,14 @@ async def run_pipeline(job_id: str, folder_url: str):
             jobs[job_id]["queue_position"] = 0
         await pipeline(job_id, folder_url)
 
+    # Force return unused heap ke OS setelah job selesai
+    gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
 
 async def deletion_loop():
     from core.database import db_get_pending_deletions, db_remove_pending_deletion
