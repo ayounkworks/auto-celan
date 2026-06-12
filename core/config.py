@@ -32,7 +32,7 @@ MAX_WIDTH        = 1024
 
 # Padding flat untuk expand bbox sebelum masuk lama_mask
 # 30px: cukup untuk konteks LaMa tanpa menelan artwork sekitar bubble
-PADDING          = 30
+PADDING          = 20
 
 # Inpainting crop
 INPAINT_CROP_PAD = 128
