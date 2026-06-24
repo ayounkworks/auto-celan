@@ -1,11 +1,7 @@
 # ============================================================
 # core/pipeline.py
-# YOLO edition — Vision API diganti yolo_client
-#
-# Perubahan dari Vision API version:
-#   - _detect_text_sliced() → yolo_client.detect_text()
-#   - vision_client / vision_sem dihapus
-#   - YOLO_MODEL_PATH dari config
+# RunPod handles YOLO + LaMa sekaligus
+# Railway hanya: download → kirim ke RunPod → upload hasil
 # ============================================================
 
 import gc
@@ -18,16 +14,12 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import aiohttp
-import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image
 
 from core.config import (
     MAX_WIDTH,
     DRIVE_OUTPUT_FOLDER_ID,
-    INPAINT_CROP_PAD,
-    MAX_RUNPOD_PIXELS,
     OUTPUT_DELETE_DELAY_MINUTES,
-    YOLO_MODEL_PATH,
 )
 from core.database import (
     db_get_job, db_update_job, db_append_log, db_mark_file_processed,
@@ -38,16 +30,12 @@ from core.drive import (
     _get_drive, filter_and_sort_files, create_output_folder,
     upload_file, download_file_async, extract_folder_id, delete_folder,
 )
-from core.image_processing import (
-    to_bytes, progress_bar, format_eta, get_dynamic_batch_size,
-    smart_clean, validate_inpaint, get_inpaint_crop,
-)
+from core.image_processing import to_bytes, progress_bar, format_eta, get_dynamic_batch_size
 from core.runpod_client import run_runpod_lama
-from core.yolo_client import detect_text, load_model as yolo_load_model
 
 # ── Shared State ──────────────────────────────────────────
-pipeline_sem:  Optional[asyncio.Semaphore]    = None
-_warmup_lock:  Optional[asyncio.Lock]         = None
+pipeline_sem:  Optional[asyncio.Semaphore]     = None
+_warmup_lock:  Optional[asyncio.Lock]          = None
 _http_session: Optional[aiohttp.ClientSession] = None
 _runpod_warmed = False
 
@@ -55,9 +43,8 @@ jobs           = {}
 job_queue      = []
 cancelled_jobs = set()
 
-LOG_MAX_ENTRIES      = 100
-FETCH_TIMEOUT        = 90
-INPAINT_BLEND_BLUR   = 2
+LOG_MAX_ENTRIES = 100
+FETCH_TIMEOUT   = 90
 
 
 def job_log(job_id, message):
@@ -78,21 +65,6 @@ def get_queue_position(job_id):
         return 0
 
 
-# ── Resize crop sebelum kirim ke RunPod ───────────────────
-
-def _maybe_resize_for_runpod(img_crop, mask_crop):
-    orig_w, orig_h = img_crop.size
-    was_resized    = False
-    if orig_w * orig_h > MAX_RUNPOD_PIXELS:
-        scale     = (MAX_RUNPOD_PIXELS / (orig_w * orig_h)) ** 0.5
-        new_w     = max(64, (int(orig_w * scale) // 8) * 8)
-        new_h     = max(64, (int(orig_h * scale) // 8) * 8)
-        img_crop  = img_crop.resize((new_w, new_h), Image.LANCZOS)
-        mask_crop = mask_crop.resize((new_w, new_h), Image.NEAREST)
-        was_resized = True
-    return img_crop, mask_crop, was_resized, orig_w, orig_h
-
-
 # ── Warmup ────────────────────────────────────────────────
 
 async def warmup(job_id=None):
@@ -100,60 +72,45 @@ async def warmup(job_id=None):
     async with _warmup_lock:
         if _runpod_warmed:
             return
-
-        # Pre-load YOLO model di thread agar tidak block pertama kali
-        msg = "🔥 Warming up (YOLO load + RunPod ping)..."
+        msg = "🔥 Warming up RunPod..."
         print(msg)
         if job_id:
             job_log(job_id, msg)
-
-        try:
-            await asyncio.to_thread(yolo_load_model, YOLO_MODEL_PATH)
-            print("[warmup] YOLO model pre-loaded OK")
-        except Exception as e:
-            print(f"[warmup] YOLO pre-load warning: {e}")
-
         try:
             from core.config import RUNPOD_API_KEY, RUNPOD_ENDPOINT_ID
             import base64 as _b64
 
-            tiny_img  = Image.new("RGB", (128, 128), (255, 255, 255))
-            tiny_mask = Image.new("L",   (128, 128), 0)
-
-            def _to_b64(img, fmt):
-                buf = io.BytesIO()
-                img.save(buf, format=fmt)
-                return _b64.b64encode(buf.getvalue()).decode()
-
+            tiny = Image.new("RGB", (128, 128), color=(255, 255, 255))
+            buf  = io.BytesIO()
+            tiny.save(buf, format="JPEG")
             payload = {
                 "input": {
-                    "image": "data:image/jpeg;base64," + _to_b64(tiny_img, "JPEG"),
-                    "mask":  "data:image/png;base64,"  + _to_b64(tiny_mask, "PNG"),
+                    "image": "data:image/jpeg;base64," + _b64.b64encode(buf.getvalue()).decode(),
                 }
             }
             headers = {
                 "Authorization": f"Bearer {RUNPOD_API_KEY}",
                 "Content-Type":  "application/json",
             }
-
             t0 = time.time()
-            async with _http_session.post(
-                f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/runsync",
-                headers=headers, json=payload,
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as r:
-                elapsed  = time.time() - t0
-                status   = (await r.json()).get("status", "?") if r.status == 200 else f"HTTP {r.status}"
-                done_msg = f"✅ RunPod warm ({elapsed:.1f}s) — status: {status}"
-
+            try:
+                async with _http_session.post(
+                    f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/runsync",
+                    headers=headers, json=payload,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as r:
+                    elapsed  = time.time() - t0
+                    status   = (await r.json()).get("status", "?") if r.status == 200 else f"HTTP {r.status}"
+                    done_msg = f"✅ RunPod warm ({elapsed:.1f}s) — {status}"
+            except asyncio.TimeoutError:
+                done_msg = "⚠️ Warmup timeout — lanjut saja"
+            except Exception as e:
+                done_msg = f"⚠️ Warmup error ({e})"
             print(done_msg)
             if job_id:
                 job_log(job_id, done_msg)
-
-        except asyncio.TimeoutError:
-            print("⚠️ Warmup timeout — worker masih cold, lanjut saja")
         except Exception as e:
-            print(f"⚠️ Warmup error ({e}) — lanjut saja")
+            print(f"⚠️ Warmup skip: {e}")
         finally:
             _runpod_warmed = True
 
@@ -165,104 +122,55 @@ async def process_image(
     filename:         str,
     output_folder_id: str,
     job_id:           str,
-    img_and_texts:    Optional[tuple] = None,
     local_output_dir: str = None,
 ) -> str:
     start_time = time.time()
-    img = final = inpaint = None
 
     try:
         if job_id in cancelled_jobs:
             return "cancelled"
 
-        # ── Download + Detect ──────────────────────────────
-        if img_and_texts is None:
-            job_log(job_id, f"Processing {filename}")
-            raw = await download_file_async(file_id, _http_session)
+        job_log(job_id, f"Processing {filename}")
 
-            def resize_and_detect():
-                image = Image.open(raw).convert("RGB")
-                raw.close()
-                if image.width > MAX_WIDTH:
-                    ratio = MAX_WIDTH / image.width
-                    image = image.resize(
-                        (MAX_WIDTH, int(image.height * ratio)), Image.LANCZOS
-                    )
-                texts = detect_text(image, YOLO_MODEL_PATH)
-                return image, texts
-
-            img, texts = await asyncio.wait_for(
-                asyncio.to_thread(resize_and_detect),
-                timeout=FETCH_TIMEOUT,
-            )
-        else:
-            img, texts = img_and_texts
-
-        # ── No text found ─────────────────────────────────
-        if not texts:
-            out_buf = to_bytes(img)
-            await _save_output(out_buf, filename, output_folder_id, local_output_dir)
-            return "skip"
-
-        # ── Build mask ────────────────────────────────────
-        img_np = np.array(img)
-        prefilled, lama_mask, _, dialog_count, _ = await asyncio.to_thread(
-            smart_clean, img, texts, img_np
+        # Download gambar
+        raw = await asyncio.wait_for(
+            download_file_async(file_id, _http_session),
+            timeout=FETCH_TIMEOUT,
         )
-        del img_np
 
-        # ── Inpaint ───────────────────────────────────────
-        if lama_mask.getbbox() is None:
-            final = prefilled
+        # Resize jika terlalu lebar
+        def load_image():
+            img = Image.open(raw).convert("RGB")
+            if img.width > MAX_WIDTH:
+                ratio = MAX_WIDTH / img.width
+                img   = img.resize(
+                    (MAX_WIDTH, int(img.height * ratio)), Image.LANCZOS
+                )
+            return img
+
+        img = await asyncio.to_thread(load_image)
+
+        # Kirim ke RunPod — YOLO + LaMa sekalian di sana
+        result = await run_runpod_lama(
+            img, None,
+            label=filename,
+            http_session=_http_session,
+        )
+
+        if result is None:
+            raise Exception("RunPod returned None")
+
+        # Simpan hasil
+        out_buf = to_bytes(result)
+        if local_output_dir:
+            import os
+            out_path = os.path.join(local_output_dir, filename)
+            with open(out_path, "wb") as f:
+                f.write(out_buf.getvalue())
         else:
-            crop_result = get_inpaint_crop(prefilled, lama_mask, pad=INPAINT_CROP_PAD)
-
-            if crop_result is None:
-                final = prefilled
-            else:
-                img_crop, mask_crop, (cx1, cy1, cx2, cy2) = crop_result
-                iw, ih    = prefilled.size
-                crop_area = (cx2 - cx1) * (cy2 - cy1)
-                crop_pct  = 100 * crop_area / (iw * ih)
-
-                job_log(job_id,
-                    f"  {filename}: {dialog_count} boxes | "
-                    f"crop {cx2-cx1}x{cy2-cy1}px ({crop_pct:.1f}%)"
-                )
-
-                img_send, mask_send, was_resized, orig_w, orig_h = \
-                    _maybe_resize_for_runpod(img_crop, mask_crop)
-
-                if was_resized:
-                    job_log(job_id,
-                        f"  {filename}: resize {orig_w}x{orig_h} → "
-                        f"{img_send.width}x{img_send.height}"
-                    )
-
-                raw_inpaint = await run_runpod_lama(
-                    img_send, mask_send,
-                    label=filename,
-                    http_session=_http_session,
-                )
-
-                if was_resized and raw_inpaint is not None:
-                    raw_inpaint = raw_inpaint.resize((orig_w, orig_h), Image.LANCZOS)
-
-                inpaint = validate_inpaint(raw_inpaint, img_crop)
-
-                if inpaint is not None:
-                    soft_mc   = mask_crop.filter(ImageFilter.GaussianBlur(INPAINT_BLEND_BLUR))
-                    final     = prefilled.copy()
-                    roi_patch = prefilled.crop((cx1, cy1, cx2, cy2))
-                    roi_patch.paste(inpaint, (0, 0))
-                    final.paste(roi_patch, (cx1, cy1), soft_mc)
-                else:
-                    job_log(job_id, f"  {filename}: inpaint corrupt, pakai prefilled")
-                    final = prefilled
-
-        # ── Save ──────────────────────────────────────────
-        out_buf   = to_bytes(final)
-        await _save_output(out_buf, filename, output_folder_id, local_output_dir)
+            await asyncio.to_thread(
+                upload_file, out_buf, filename, output_folder_id, "image/jpeg"
+            )
 
         duration  = time.time() - start_time
         completed = db_increment_completed(job_id)
@@ -288,31 +196,12 @@ async def process_image(
         failed.append(filename)
         db_update_job(job_id, failed_files=json.dumps(failed))
         db_mark_file_processed(job_id, filename, "failed", duration)
-
         job_log(job_id, f"Error on {filename}: {e}")
         print(traceback.format_exc())
         return "failed"
 
     finally:
-        for obj in [img, inpaint, final]:
-            try:
-                if obj:
-                    obj.close()
-            except Exception:
-                pass
         gc.collect()
-
-
-async def _save_output(out_buf, filename, output_folder_id, local_output_dir):
-    import os
-    if local_output_dir:
-        out_path = os.path.join(local_output_dir, filename)
-        with open(out_path, "wb") as f:
-            f.write(out_buf.getvalue())
-    else:
-        await asyncio.to_thread(
-            upload_file, out_buf, filename, output_folder_id, "image/jpeg"
-        )
 
 
 # ── Pipeline ──────────────────────────────────────────────
@@ -327,7 +216,7 @@ async def pipeline(job_id: str, folder_url: str):
 
         folder_id = extract_folder_id(folder_url)
         if not folder_id or len(folder_id) < 5:
-            raise Exception(f"ID Folder Google Drive tidak valid: '{folder_id}'")
+            raise Exception(f"ID Folder tidak valid: '{folder_id}'")
 
         job_log(job_id, f"Reading folder: {folder_id}")
         await warmup(job_id)
@@ -343,9 +232,9 @@ async def pipeline(job_id: str, folder_url: str):
         valid_files, skipped = filter_and_sort_files(all_files)
 
         if skipped:
-            job_log(job_id, f"Skipped non-image: {skipped}")
+            job_log(job_id, f"Skipped: {skipped}")
         if not valid_files:
-            raise Exception("No valid images found in folder")
+            raise Exception("No valid images found")
 
         folder_name, output_folder_id = await asyncio.to_thread(
             create_output_folder, DRIVE_OUTPUT_FOLDER_ID, "output"
@@ -366,16 +255,13 @@ async def pipeline(job_id: str, folder_url: str):
         pending_files = [f for f in valid_files if f["name"] not in already_done]
 
         if already_done:
-            job_log(job_id,
-                f"Resume: {len(already_done)} done, {len(pending_files)} remaining"
-            )
+            job_log(job_id, f"Resume: {len(already_done)} done, {len(pending_files)} remaining")
 
-        file_times    = []
+        batch_size    = get_dynamic_batch_size(len(pending_files))
         success_count = len(already_done)
         failed_count  = 0
-        skip_count    = 0
+        file_times    = []
 
-        batch_size = get_dynamic_batch_size(len(pending_files))
         job_log(job_id, f"Total: {len(pending_files)} files | Batch: {batch_size}")
 
         for i in range(0, len(pending_files), batch_size):
@@ -389,61 +275,9 @@ async def pipeline(job_id: str, folder_url: str):
             batch = pending_files[i:i + batch_size]
             t0    = time.time()
 
-            # ── Prefetch: download + YOLO detect paralel ──
-            async def fetch_detect(f):
-                try:
-                    job_log(job_id, f"Fetching {f['name']}")
-                    raw = await asyncio.wait_for(
-                        download_file_async(f["id"], _http_session),
-                        timeout=FETCH_TIMEOUT,
-                    )
-
-                    def resize_and_detect():
-                        image = Image.open(raw).convert("RGB")
-                        if image.width > MAX_WIDTH:
-                            ratio = MAX_WIDTH / image.width
-                            image = image.resize(
-                                (MAX_WIDTH, int(image.height * ratio)), Image.LANCZOS
-                            )
-                        raw.close()
-                        texts = detect_text(image, YOLO_MODEL_PATH)
-                        return image, texts
-
-                    return await asyncio.wait_for(
-                        asyncio.to_thread(resize_and_detect),
-                        timeout=FETCH_TIMEOUT,
-                    )
-
-                except asyncio.TimeoutError:
-                    job_log(job_id, f"  {f['name']}: timeout saat fetch/detect, skip")
-                    return None
-                except Exception as e:
-                    job_log(job_id, f"  Detect error {f['name']}: {e}")
-                    return None
-
-            detect_results = await asyncio.gather(*[fetch_detect(f) for f in batch])
-
-            # ── Inpaint per file ───────────────────────────
-            async def process_with_prefetched(f, img_and_texts):
-                if img_and_texts is None:
-                    row    = db_get_job(job_id)
-                    failed = json.loads(row["failed_files"] or "[]")
-                    failed.append(f["name"])
-                    db_update_job(job_id, failed_files=json.dumps(failed))
-                    db_mark_file_processed(job_id, f["name"], "failed", 0)
-                    completed = db_increment_completed(job_id)
-                    if job_id in jobs:
-                        jobs[job_id]["completed_files"] = completed
-                    return "failed"
-
-                return await process_image(
-                    f["id"], f["name"], output_folder_id, job_id,
-                    img_and_texts=img_and_texts,
-                )
-
             results = await asyncio.gather(*[
-                process_with_prefetched(f, vr)
-                for f, vr in zip(batch, detect_results)
+                process_image(f["id"], f["name"], output_folder_id, job_id)
+                for f in batch
             ])
 
             batch_time = time.time() - t0
@@ -452,7 +286,6 @@ async def pipeline(job_id: str, folder_url: str):
             for r in results:
                 if r == "success":  success_count += 1
                 elif r == "failed": failed_count  += 1
-                elif r == "skip":   skip_count    += 1
 
             if file_times:
                 avg         = sum(file_times) / len(file_times)
@@ -461,19 +294,14 @@ async def pipeline(job_id: str, folder_url: str):
                 if job_id in jobs:
                     jobs[job_id]["eta"] = format_eta(eta_seconds)
 
-        # ── Finalize ──────────────────────────────────────
+        # Finalize
         current_status = db_get_job(job_id)["status"]
         if current_status not in ("cancelled",):
-            all_failed   = (failed_count > 0 and success_count == 0 and skip_count == 0)
+            all_failed   = (failed_count > 0 and success_count == 0)
             final_status = "failed" if all_failed else "completed"
-            db_update_job(
-                job_id,
-                status=final_status,
-                finished_at=datetime.now().isoformat(),
-            )
+            db_update_job(job_id, status=final_status, finished_at=datetime.now().isoformat())
             if job_id in jobs:
-                jobs[job_id]["status"]      = final_status
-                jobs[job_id]["finished_at"] = datetime.now().isoformat()
+                jobs[job_id]["status"] = final_status
 
         if output_folder_id:
             db_schedule_deletion(output_folder_id)
@@ -481,10 +309,7 @@ async def pipeline(job_id: str, folder_url: str):
             if job_id in jobs:
                 jobs[job_id]["delete_at_unix"] = int(delete_at.timestamp())
 
-        job_log(job_id,
-            f"Done! ✅ {success_count} berhasil | ⏭ {skip_count} skip | ❌ {failed_count} gagal"
-        )
-        job_log(job_id, f"Output Drive: {folder_name} (ID: {output_folder_id})")
+        job_log(job_id, f"Done! ✅ {success_count} berhasil | ❌ {failed_count} gagal")
 
     except Exception as e:
         db_update_job(job_id, status="failed")
@@ -503,7 +328,6 @@ async def pipeline(job_id: str, folder_url: str):
 async def run_pipeline(job_id: str, folder_url: str):
     job_queue.append(job_id)
     pos = get_queue_position(job_id)
-
     if pos > 1:
         db_update_job(job_id, status="queued")
         if job_id in jobs:
