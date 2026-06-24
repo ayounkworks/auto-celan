@@ -24,6 +24,9 @@ def image_to_base64(img: Image.Image, fmt="PNG") -> str:
     return base64.b64encode(buf.read()).decode()
 
 def base64_to_image(b64: str) -> Image.Image:
+    if "," in b64:
+        b64 = b64.split(",", 1)[1]
+    b64 += "=" * (-len(b64) % 4)
     data = base64.b64decode(b64)
     return Image.open(io.BytesIO(data))
 
@@ -54,7 +57,7 @@ def run_inpaint(image: Image.Image, mask: Image.Image, label="result") -> Image.
     print("Sending to RunPod...")
     start    = time.time()
     endpoint = runpod.Endpoint(ENDPOINT_ID)
-    run      = endpoint.run({"img": image_b64, "mask": mask_b64})
+    run      = endpoint.run({"image": image_b64, "mask": mask_b64})
 
     print(f"Job ID   : {run.job_id}")
     print("Waiting  ", end="", flush=True)
