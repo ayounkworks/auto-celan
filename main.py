@@ -30,11 +30,10 @@ import aiohttp
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from core.config import DRIVE_OUTPUT_FOLDER_ID, YOLO_MODEL_PATH
+from core.config import DRIVE_OUTPUT_FOLDER_ID
 from core.database import init_db, db_create_job, db_get_job
 from core.drive import extract_folder_id, filter_and_sort_files, upload_file, _get_drive
 from core.image_processing import progress_bar, format_eta
-from core.yolo_client import load_model as yolo_load_model
 
 import core.runpod_client as runpod_module
 import core.pipeline as pipeline_module
@@ -48,9 +47,6 @@ async def lifespan(app: FastAPI):
     runpod_module.runpod_sem     = asyncio.Semaphore(8)
     pipeline_module._warmup_lock = asyncio.Lock()
     pipeline_module.pipeline_sem = asyncio.Semaphore(10)
-
-    # Pre-load YOLO model saat startup
-    await asyncio.to_thread(yolo_load_model, YOLO_MODEL_PATH)
 
     timeout   = aiohttp.ClientTimeout(total=300, connect=20, sock_connect=20, sock_read=300)
     connector = aiohttp.TCPConnector(limit=30, ttl_dns_cache=300, family=socket.AF_INET)

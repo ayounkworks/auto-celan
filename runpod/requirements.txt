@@ -1,5 +1,5 @@
 runpod==1.7.3
-Pillow==10.3.0
+ultralytics>=8.3.0
+Pillow>=10.3.0
 numpy==1.26.4
 opencv-python-headless==4.9.0.80
-ultralytics>=8.3.0

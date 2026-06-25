@@ -18,9 +18,9 @@ from core.config import RUNPOD_API_KEY, RUNPOD_ENDPOINT_ID
 
 runpod_sem: Optional[asyncio.Semaphore] = None
 
-RUNSYNC_TIMEOUT = 120
+RUNSYNC_TIMEOUT = 180
 POLL_INTERVAL   = 1.0
-POLL_MAX        = 120
+POLL_MAX        = 180
 
 
 def normalize_b64(data: str):

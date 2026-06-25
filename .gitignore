@@ -23,6 +23,3 @@ output/
 .DS_Store
 Thumbs.db
 
-# Model weights
-models/
-runpod/best.pt
