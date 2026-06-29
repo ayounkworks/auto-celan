@@ -176,7 +176,14 @@ async def run_runpod_lama(
             return await run_runpod_lama(image, mask, label, session)
 
     async with (runpod_sem or asyncio.Lock()):
-        result = await _run_runsync(image, label, http_session)
-        if result is not None:
-            return result
-        return await _run_poll(image, label, http_session)
+        for attempt in range(3):
+            result = await _run_runsync(image, label, http_session)
+            if result is not None:
+                return result
+            result = await _run_poll(image, label, http_session)
+            if result is not None:
+                return result
+            if attempt < 2:
+                print(f"[{label}] attempt {attempt + 1} failed, retrying in 3s...")
+                await asyncio.sleep(3)
+        return None
