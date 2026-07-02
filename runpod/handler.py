@@ -85,10 +85,10 @@ def strip_prefix(data: str) -> str:
 def decode_rgb(data: str) -> Image.Image:
     return Image.open(BytesIO(base64.b64decode(strip_prefix(data)))).convert("RGB")
 
-def encode_png(img: Image.Image) -> str:
+def encode_jpeg(img: Image.Image, quality: int = 92) -> str:
     buf = BytesIO()
-    img.save(buf, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("utf-8")
+    img.save(buf, format="JPEG", quality=quality)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
 # ── YOLO detection ────────────────────────────────────────
@@ -281,7 +281,7 @@ def handler(job):
             print("No text detected.")
             if was_resized:
                 image = image.resize((orig_w, orig_h), Image.LANCZOS)
-            return {"image": encode_png(image), "boxes": 0}
+            return {"image": encode_jpeg(image), "boxes": 0}
 
         # Build mask
         mask = build_mask(image, boxes)
@@ -298,7 +298,7 @@ def handler(job):
         elapsed = time.time() - start
         print(f"Total: {elapsed:.2f}s")
 
-        return {"image": encode_png(result), "boxes": len(boxes)}
+        return {"image": encode_jpeg(result), "boxes": len(boxes)}
 
     except Exception as e:
         print("Handler error:", repr(e))
