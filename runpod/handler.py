@@ -28,9 +28,9 @@ LAMA_DIR    = "/app/models/big-lama"   # folder berisi config.yaml + models/best
 LAMA_PT     = "/app/models/big-lama.pt"
 YOLO_PATH   = "/app/models/best.pt"
 
-YOLO_CONF     = 0.40
+YOLO_CONF     = 0.25
 YOLO_IOU      = 0.45
-YOLO_IMGSZ    = 1024
+YOLO_IMGSZ    = 1280   # HARUS sama dengan imgsz training (lihat notebook cell 14)
 PADDING       = 15
 SLICE_HEIGHT  = 1500
 SLICE_OVERLAP = 200
@@ -47,6 +47,7 @@ print(f"[init] Loading YOLO dari {YOLO_PATH}...")
 from ultralytics import YOLO
 yolo_model = YOLO(YOLO_PATH)
 print(f"[init] YOLO ready — task={yolo_model.task} classes={yolo_model.names}")
+print(f"[init] YOLO config — conf={YOLO_CONF} iou={YOLO_IOU} imgsz={YOLO_IMGSZ}")
 
 # ── Load LaMa ─────────────────────────────────────────────
 print(f"[init] Loading LaMa...")
