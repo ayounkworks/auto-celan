@@ -43,6 +43,7 @@ def _make_job_embed(job_id: str, data: dict) -> discord.Embed:
         "queued":    discord.Color.yellow(),
         "running":   discord.Color.blue(),
         "completed": discord.Color.green(),
+        "completed_with_errors": discord.Color.orange(),
         "failed":    discord.Color.red(),
         "cancelled": discord.Color.dark_gray(),
     }
@@ -50,6 +51,7 @@ def _make_job_embed(job_id: str, data: dict) -> discord.Embed:
         "queued":    "⏳",
         "running":   "⚙️",
         "completed": "✅",
+        "completed_with_errors": "⚠️",
         "failed":    "❌",
         "cancelled": "🚫",
     }
@@ -77,7 +79,7 @@ def _make_job_embed(job_id: str, data: dict) -> discord.Embed:
     if progress and status == "running":
         short = progress[:100] + "..." if len(progress) > 100 else progress
         embed.add_field(name="Last update", value=f"`{short}`", inline=False)
-    if status == "completed" and output_id:
+    if status in ("completed", "completed_with_errors") and output_id:
         url     = f"https://drive.google.com/drive/folders/{output_id}"
         unix_ts = int(datetime.now().timestamp() + (OUTPUT_DELETE_DELAY_MINUTES * 60))
         embed.add_field(
@@ -102,7 +104,7 @@ async def _notify_done(channel, job_id: str, mention: str):
         return
     data   = dict(row)
     status = data.get("status", "?")
-    icon   = "✅" if status == "completed" else "❌"
+    icon   = "✅" if status == "completed" else ("⚠️" if status == "completed_with_errors" else "❌")
     await channel.send(
         content=f"{mention} {icon} Job `{job_id}` selesai — **{status.upper()}**!",
         embed=_make_job_embed(job_id, data),
@@ -240,7 +242,7 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
                 await msg.edit(embed=_make_job_embed(job_id, fresh))
             except Exception:
                 pass
-            if status in ("completed", "failed", "cancelled"):
+            if status in ("completed", "completed_with_errors", "failed", "cancelled"):
                 break
 
     async def _run_pipeline():
@@ -346,7 +348,7 @@ async def cmd_cancel(interaction: discord.Interaction, job_id: str):
     if not status:
         await interaction.response.send_message(f"❌ Job `{job_id}` tidak ditemukan.", ephemeral=True)
         return
-    if status in ("completed", "failed", "cancelled"):
+    if status in ("completed", "completed_with_errors", "failed", "cancelled"):
         await interaction.response.send_message(
             f"ℹ️ Job `{job_id}` sudah **{status}**, tidak bisa dibatalkan.", ephemeral=True
         )
