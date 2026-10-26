@@ -7,7 +7,6 @@
 import asyncio
 import base64
 import time
-import math
 from io import BytesIO
 from typing import Optional
 
@@ -18,7 +17,6 @@ from core.config import RUNPOD_API_KEY, RUNPOD_ENDPOINT_ID
 
 runpod_sem: Optional[asyncio.Semaphore] = None
 
-RUNSYNC_TIMEOUT = 180
 POLL_INTERVAL   = 1.0
 POLL_MAX        = 180
 
@@ -69,46 +67,6 @@ async def _decode_result(output, http_session) -> Optional[Image.Image]:
         return Image.open(BytesIO(base64.b64decode(b64))).convert("RGB")
     except Exception as e:
         print(f"[runpod_client] decode error: {e}")
-        return None
-
-
-async def _run_runsync(image: Image.Image, label="", http_session=None) -> Optional[Image.Image]:
-    payload = _build_payload(image)
-    headers = {
-        "Authorization": f"Bearer {RUNPOD_API_KEY}",
-        "Content-Type":  "application/json",
-    }
-    url   = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/runsync"
-    start = time.time()
-
-    try:
-        async with http_session.post(
-            url, headers=headers, json=payload,
-            timeout=aiohttp.ClientTimeout(total=RUNSYNC_TIMEOUT),
-        ) as r:
-            if r.status not in (200, 201):
-                text = await r.text()
-                print(f"[{label}] runsync HTTP {r.status}: {text[:200]}")
-                return None
-            data = await r.json()
-
-        status = data.get("status")
-        if status == "COMPLETED":
-            img = await _decode_result(data.get("output"), http_session)
-            print(f"[{label}] runsync done {time.time()-start:.2f}s boxes={data.get('output', {}).get('boxes', '?')}")
-            return img
-        elif status == "FAILED":
-            print(f"[{label}] runsync FAILED: {data.get('error')}")
-            return None
-        else:
-            print(f"[{label}] runsync status={status}, fallback ke polling")
-            return None
-
-    except asyncio.TimeoutError:
-        print(f"[{label}] runsync timeout {RUNSYNC_TIMEOUT}s, fallback polling")
-        return None
-    except Exception as e:
-        print(f"[{label}] runsync error: {e}, fallback polling")
         return None
 
 
@@ -175,7 +133,6 @@ async def run_runpod_lama(
         async with aiohttp.ClientSession() as session:
             return await run_runpod_lama(image, mask, label, session)
 
-    # Submit a single async job and poll its ID. Do not fall back from a timed-out
-    # /runsync to a new /run request: the first job may still be executing.
+    # Submit a single async job and poll its ID; never resubmit an uncertain job.
     async with (runpod_sem or asyncio.Lock()):
         return await _run_poll(image, label, http_session)
