@@ -9,7 +9,7 @@ import socket
 import uuid
 import json
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
 import discord
@@ -81,7 +81,12 @@ def _make_job_embed(job_id: str, data: dict) -> discord.Embed:
         embed.add_field(name="Last update", value=f"`{short}`", inline=False)
     if status in ("completed", "completed_with_errors") and output_id:
         url     = f"https://drive.google.com/drive/folders/{output_id}"
-        unix_ts = int(datetime.now().timestamp() + (OUTPUT_DELETE_DELAY_MINUTES * 60))
+        finished_at = data.get("finished_at")
+        try:
+            finished_dt = datetime.fromisoformat(finished_at) if finished_at else datetime.now()
+        except (TypeError, ValueError):
+            finished_dt = datetime.now()
+        unix_ts = int((finished_dt + timedelta(minutes=OUTPUT_DELETE_DELAY_MINUTES)).timestamp())
         embed.add_field(
             name="📁 Output Drive",
             value=f"[Buka folder]({url})\n⏰ Dihapus otomatis <t:{unix_ts}:R>",
