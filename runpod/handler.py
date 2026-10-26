@@ -72,7 +72,7 @@ if lama_mode is None or lama_model is None:
     raise RuntimeError(
         f"LaMa model failed to load from {LAMA_PT}; refusing to start an unhealthy worker."
     )
-print(f"[init] LaMa mode: {lama_mode})
+print(f"[init] LaMa mode: {lama_mode}")
 
 
 # ── BASE64 helpers ────────────────────────────────────────
