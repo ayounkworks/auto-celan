@@ -44,11 +44,13 @@ Di Railway dashboard → project kamu → tab **Variables** → tambahkan:
 
 | Variable | Value |
 |---|---|
-| `GOOGLE_VISION_API_KEY` | `AIzaSyCouLk...` (dari .env) |
-| `DRIVE_OUTPUT_FOLDER_ID` | `1dih9lRNUKEH...` (dari .env) |
-| `RUNPOD_API_KEY` | `rpa_TO3N68TG...` (dari .env) |
-| `RUNPOD_ENDPOINT_ID` | `3wjmfk65eoyfd8` |
-| `DRIVE_TOKEN_JSON` | *(lihat nilai di bawah)* |
+| `GOOGLE_VISION_API_KEY` | Opsional / kompatibilitas lama |
+| `DRIVE_OUTPUT_FOLDER_ID` | ID folder output Google Drive, atau kosong untuk root Drive |
+| `RUNPOD_API_KEY` | API key RunPod dari dashboard milikmu |
+| `RUNPOD_ENDPOINT_ID` | ID endpoint RunPod milikmu |
+| `DRIVE_TOKEN_JSON` | Token OAuth Google Drive dalam format JSON satu baris |
+| `OUTPUT_DELETE_DELAY_MINUTES` | `1440` — hapus output 24 jam setelah job selesai |
+| `AUTO_CELAN_API_KEY` | Buat secret acak panjang untuk proteksi endpoint API |
 
 ### Nilai `DRIVE_TOKEN_JSON`
 
@@ -60,6 +62,10 @@ Copy isi file `token_drive.json` kamu dalam satu baris JSON:
 
 > Ini sudah ditangani di `core/drive.py` — env var `DRIVE_TOKEN_JSON`
 > dibaca lebih prioritas dari file `token_drive.json`.
+>
+> Jangan menempelkan token asli ke README, issue, atau log. Endpoint API selain `/health`
+> memerlukan `Authorization: Bearer <AUTO_CELAN_API_KEY>`; request API tanpa key yang
+> dikonfigurasi akan ditolak.
 
 ---
 
@@ -85,6 +91,7 @@ Sekarang laptop kamu **tidak perlu internet kencang** — cukup kirim 1 POST kec
 ```bash
 # Mulai proses folder Drive
 curl -X POST https://auto-celan-production.up.railway.app/clean \
+  -H "Authorization: Bearer $AUTO_CELAN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"folder_url": "https://drive.google.com/drive/folders/FOLDER_ID_KAMU"}'
 
@@ -94,7 +101,8 @@ curl -X POST https://auto-celan-production.up.railway.app/clean \
 
 ```bash
 # Cek status
-curl https://auto-celan-production.up.railway.app/job/abc12345
+curl https://auto-celan-production.up.railway.app/job/abc12345 \
+  -H "Authorization: Bearer $AUTO_CELAN_API_KEY"
 ```
 
 ---
