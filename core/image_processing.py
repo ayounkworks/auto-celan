@@ -35,8 +35,10 @@ from core.config import (
 # ── Utilities ─────────────────────────────────────────────
 
 def to_bytes(img, fmt="JPEG", quality=90) -> io.BytesIO:
+    """Serialize an image using the requested format without extension/content mismatch."""
     buffer = io.BytesIO()
-    img.save(buffer, format=fmt, **({"quality": quality} if fmt == "JPEG" else {}))
+    save_options = {"quality": quality} if fmt.upper() in {"JPEG", "WEBP"} else {}
+    img.save(buffer, format=fmt, **save_options)
     buffer.seek(0)
     return buffer
 

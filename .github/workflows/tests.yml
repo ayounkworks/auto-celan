@@ -1,0 +1,27 @@
+name: Python checks
+
+on:
+  push:
+    branches:
+      - main
+      - "fix/**"
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  syntax-and-database-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile Python files
+        run: python -m compileall -q .
+      - name: Install test dependency
+        run: python -m pip install pytest
+      - name: Test database resume and retention
+        run: python -m pytest -q test/test_database_state.py

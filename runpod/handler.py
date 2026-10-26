@@ -36,10 +36,9 @@ SLICE_HEIGHT  = 1500
 SLICE_OVERLAP = 200
 MAX_HEIGHT    = 20000
 
-# Refinement config
-REFINE        = True   # set False untuk disable refinement (fallback ke LaMa biasa)
-REFINE_SCALE  = 0.5   # resolusi rendah = 50% dari original untuk guide
-REFINE_ITERS  = 15    # iterasi optimasi — lebih banyak = lebih baik tapi lebih lambat
+# Two-pass blend config
+REFINE        = True   # set False untuk menonaktifkan two-pass blending
+REFINE_SCALE  = 0.5   # resolusi rendah untuk guide
 
 # ── Load YOLO ─────────────────────────────────────────────
 print(f"[init] Device: {DEVICE}")
@@ -69,6 +68,10 @@ def _load_lama():
         return None
 
 lama_mode = _load_lama()
+if lama_mode is None or lama_model is None:
+    raise RuntimeError(
+        f"LaMa model failed to load from {LAMA_PT}; refusing to start an unhealthy worker."
+    )
 print(f"[init] LaMa mode: {lama_mode}")
 
 
@@ -173,28 +176,16 @@ def _lama_forward(image: Image.Image, mask: Image.Image) -> Image.Image:
     return result
 
 
-# ── LaMa + Refinement ─────────────────────────────────────
-# Implementasi refinement mengikuti paper Geomagical Labs:
-# https://github.com/advimman/lama/pull/112
-#
-# Ide: inpaint di resolusi rendah → hasilnya jadi "guide" untuk
-# optimize feature maps di resolusi penuh via multiscale loss.
-# Tidak butuh training ulang, tidak ada model tambahan.
+# ── Two-pass LaMa blend ───────────────────────────────────
+# This implementation blends low-resolution and full-resolution LaMa
+# outputs. It does not optimize feature maps or run iterative refinement.
 
 def _run_lama_with_refine(
     image: Image.Image,
     mask:  Image.Image,
     scale: float = REFINE_SCALE,
-    n_iters: int = REFINE_ITERS,
 ) -> Image.Image:
-    """
-    LaMa + refinement step (tanpa full repo, hanya butuh TorchScript model).
-
-    Algoritma:
-    1. Inpaint gambar di resolusi rendah → low_res_result
-    2. Di resolusi penuh, optimize feature maps supaya hasilnya
-       konsisten dengan low_res_result (multiscale consistency loss)
-    """
+    """Run low- and full-resolution LaMa passes, then blend inside the mask."""
     w, h = image.size
 
     # Step 1: Inpaint di resolusi rendah

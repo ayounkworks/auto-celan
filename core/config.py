@@ -42,5 +42,8 @@ MAX_AREA_RATIO     = 0.03
 BORDER_SAMPLE      = 18
 VARIANCE_THRESHOLD = 300
 
-# Auto-delete output setelah selesai (menit)
-OUTPUT_DELETE_DELAY_MINUTES = 15
+# Auto-delete output setelah selesai (menit). Default: 24 jam.
+try:
+    OUTPUT_DELETE_DELAY_MINUTES = max(1, int(os.getenv("OUTPUT_DELETE_DELAY_MINUTES", "1440")))
+except (TypeError, ValueError):
+    OUTPUT_DELETE_DELAY_MINUTES = 1440

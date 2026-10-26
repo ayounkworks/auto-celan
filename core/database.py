@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 DB_PATH   = "manga_bot.db"
 _db_local = threading.local()
+_db_write_lock = threading.RLock()
 
 
 def get_db():
@@ -221,34 +222,105 @@ def db_append_log(job_id, message):
 
 
 def db_mark_file_processed(job_id, filename, status, duration):
+    """Persist the latest result for a file and recompute unique processed count atomically."""
     conn = get_db()
-    conn.execute(
-        "INSERT OR REPLACE INTO processed_files "
-        "(job_id, filename, status, duration) VALUES (?, ?, ?, ?)",
-        (job_id, filename, status, duration)
-    )
-    conn.commit()
+    with _db_write_lock:
+        conn.execute(
+            "INSERT OR REPLACE INTO processed_files "
+            "(job_id, filename, status, duration) VALUES (?, ?, ?, ?)",
+            (job_id, filename, status, duration)
+        )
+        conn.execute(
+            """UPDATE jobs
+               SET completed_files = (
+                   SELECT COUNT(*) FROM processed_files
+                   WHERE job_id = ? AND status IN ('success', 'failed')
+               )
+               WHERE job_id = ?""",
+            (job_id, job_id)
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT completed_files FROM jobs WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        return row["completed_files"] if row else 0
 
 
 def db_get_processed_files(job_id):
+    """Only successful files may be skipped when resuming a job."""
     rows = get_db().execute(
-        "SELECT filename FROM processed_files WHERE job_id = ?", (job_id,)
+        "SELECT filename FROM processed_files WHERE job_id = ? AND status = 'success'",
+        (job_id,)
     ).fetchall()
     return {r["filename"] for r in rows}
 
 
-def db_schedule_deletion(folder_id):
-    """
-    Jadwalkan penghapusan folder setelah 15 menit.
-    deletion_loop() di main bot event loop yang akan eksekusi.
-    """
-    delete_at = (datetime.now() + timedelta(minutes=15)).isoformat()
-    conn      = get_db()
-    conn.execute(
-        "INSERT OR REPLACE INTO pending_deletions (folder_id, delete_at) VALUES (?, ?)",
-        (folder_id, delete_at)
-    )
-    conn.commit()
+def db_reset_processed_files(job_id):
+    """Clear resume state when the previous output folder is no longer usable."""
+    conn = get_db()
+    with _db_write_lock:
+        conn.execute("DELETE FROM processed_files WHERE job_id = ?", (job_id,))
+        conn.execute(
+            "UPDATE jobs SET completed_files = 0, failed_files = '[]' WHERE job_id = ?",
+            (job_id,)
+        )
+        conn.commit()
+
+
+def db_record_file_failure(job_id, filename):
+    """Update the failure list atomically without duplicate filenames."""
+    conn = get_db()
+    with _db_write_lock:
+        row = conn.execute(
+            "SELECT failed_files FROM jobs WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        if not row:
+            return
+        try:
+            failed = json.loads(row["failed_files"] or "[]")
+        except (TypeError, ValueError):
+            failed = []
+        if filename not in failed:
+            failed.append(filename)
+        conn.execute(
+            "UPDATE jobs SET failed_files = ? WHERE job_id = ?",
+            (json.dumps(failed), job_id)
+        )
+        conn.commit()
+
+
+def db_clear_file_failure(job_id, filename):
+    """Remove a filename from failed_files after a successful retry."""
+    conn = get_db()
+    with _db_write_lock:
+        row = conn.execute(
+            "SELECT failed_files FROM jobs WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        if not row:
+            return
+        try:
+            failed = json.loads(row["failed_files"] or "[]")
+        except (TypeError, ValueError):
+            failed = []
+        failed = [name for name in failed if name != filename]
+        conn.execute(
+            "UPDATE jobs SET failed_files = ? WHERE job_id = ?",
+            (json.dumps(failed), job_id)
+        )
+        conn.commit()
+
+
+def db_schedule_deletion(folder_id, delay_minutes=1440):
+    """Schedule output-folder deletion after the configured retention period."""
+    delay_minutes = max(1, int(delay_minutes))
+    delete_at = (datetime.now() + timedelta(minutes=delay_minutes)).isoformat()
+    conn = get_db()
+    with _db_write_lock:
+        conn.execute(
+            "INSERT OR REPLACE INTO pending_deletions (folder_id, delete_at) VALUES (?, ?)",
+            (folder_id, delete_at)
+        )
+        conn.commit()
 
 
 def db_get_pending_deletions():

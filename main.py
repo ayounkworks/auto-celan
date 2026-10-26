@@ -23,11 +23,12 @@ import io
 import json
 import uuid
 import socket
+import hmac
 from contextlib import asynccontextmanager
 from datetime import datetime
 
 import aiohttp
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from core.config import DRIVE_OUTPUT_FOLDER_ID
@@ -63,6 +64,24 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Manga Text Removal API", lifespan=lifespan)
 
+API_ACCESS_KEY = os.getenv("AUTO_CELAN_API_KEY")
+
+
+def require_api_key(authorization: str | None = Header(default=None)):
+    """Require a Bearer API key for endpoints that can read or modify Drive/jobs."""
+    if not API_ACCESS_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="API disabled: configure AUTO_CELAN_API_KEY before using protected endpoints.",
+        )
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not hmac.compare_digest(token, API_ACCESS_KEY):
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid API key.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
 
 class CleanRequest(BaseModel):
     folder_url: str
@@ -77,7 +96,7 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/scan")
+@app.post("/scan", dependencies=[Depends(require_api_key)])
 async def scan_folder_endpoint(req: ScanRequest):
     try:
         folder_id = extract_folder_id(req.folder_url)
@@ -99,7 +118,7 @@ async def scan_folder_endpoint(req: ScanRequest):
         raise HTTPException(400, str(e))
 
 
-@app.post("/upload_images")
+@app.post("/upload_images", dependencies=[Depends(require_api_key)])
 async def api_upload_images_form(
     label: str = Form(default=""),
     files: list[UploadFile] = File(...),
@@ -110,10 +129,11 @@ async def api_upload_images_form(
     ts          = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     folder_name = label or f"Upload_{ts}"
     meta = {
-        "name":     folder_name,
+        "name": folder_name,
         "mimeType": "application/vnd.google-apps.folder",
-        "parents":  [DRIVE_OUTPUT_FOLDER_ID],
     }
+    if DRIVE_OUTPUT_FOLDER_ID:
+        meta["parents"] = [DRIVE_OUTPUT_FOLDER_ID]
     folder    = await asyncio.to_thread(
         lambda: _get_drive().files().create(body=meta, fields="id").execute()
     )
@@ -137,7 +157,7 @@ async def api_upload_images_form(
     }
 
 
-@app.post("/clean")
+@app.post("/clean", dependencies=[Depends(require_api_key)])
 async def api_clean(req: CleanRequest, bg: BackgroundTasks):
     job_id = str(uuid.uuid4())[:8]
     db_create_job(job_id, "", req.folder_url, 0)
@@ -152,7 +172,7 @@ async def api_clean(req: CleanRequest, bg: BackgroundTasks):
     return {"job_id": job_id, "message": "Pipeline started"}
 
 
-@app.get("/job/{job_id}")
+@app.get("/job/{job_id}", dependencies=[Depends(require_api_key)])
 async def api_get_status(job_id: str):
     data = jobs.get(job_id)
     if not data:

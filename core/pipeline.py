@@ -12,9 +12,11 @@ import asyncio
 import traceback
 from datetime import datetime, timedelta
 from typing import Optional
+import os
 
 import aiohttp
 from PIL import Image
+from googleapiclient.errors import HttpError
 
 from core.config import (
     MAX_WIDTH,
@@ -23,8 +25,8 @@ from core.config import (
 )
 from core.database import (
     db_get_job, db_update_job, db_append_log, db_mark_file_processed,
-    db_get_processed_files, db_schedule_deletion, db_increment_completed,
-    db_remove_pending_deletion,
+    db_get_processed_files, db_schedule_deletion, db_reset_processed_files,
+    db_record_file_failure, db_clear_file_failure, db_remove_pending_deletion,
 )
 from core.drive import (
     _get_drive, filter_and_sort_files, create_output_folder,
@@ -160,24 +162,31 @@ async def process_image(
         if result is None:
             raise Exception("RunPod returned None")
 
-        # Simpan hasil
-        out_buf = to_bytes(result)
+        # Keep the source file extension and actual encoded format in sync.
+        ext = os.path.splitext(filename)[1].lower()
+        format_by_ext = {
+            ".jpg": ("JPEG", "image/jpeg"),
+            ".jpeg": ("JPEG", "image/jpeg"),
+            ".png": ("PNG", "image/png"),
+            ".webp": ("WEBP", "image/webp"),
+        }
+        image_format, mimetype = format_by_ext.get(ext, ("JPEG", "image/jpeg"))
+        out_buf = to_bytes(result, fmt=image_format, quality=95)
         if local_output_dir:
-            import os
-            out_path = os.path.join(local_output_dir, filename)
+            out_path = os.path.join(local_output_dir, os.path.basename(filename))
             with open(out_path, "wb") as f:
                 f.write(out_buf.getvalue())
         else:
             await asyncio.to_thread(
-                upload_file, out_buf, filename, output_folder_id, "image/jpeg"
+                upload_file, out_buf, filename, output_folder_id, mimetype
             )
 
-        duration  = time.time() - start_time
-        completed = db_increment_completed(job_id)
+        duration = time.time() - start_time
+        completed = db_mark_file_processed(job_id, filename, "success", duration)
+        db_clear_file_failure(job_id, filename)
         if job_id in jobs:
             jobs[job_id]["completed_files"] = completed
 
-        db_mark_file_processed(job_id, filename, "success", duration)
         row = db_get_job(job_id)
         job_log(job_id,
             f"{progress_bar(completed, row['total_files'] or 0)} "
@@ -186,16 +195,12 @@ async def process_image(
         return "success"
 
     except Exception as e:
-        duration  = time.time() - start_time
-        completed = db_increment_completed(job_id)
+        duration = time.time() - start_time
+        completed = db_mark_file_processed(job_id, filename, "failed", duration)
+        db_record_file_failure(job_id, filename)
         if job_id in jobs:
             jobs[job_id]["completed_files"] = completed
 
-        row    = db_get_job(job_id)
-        failed = json.loads(row["failed_files"] or "[]")
-        failed.append(filename)
-        db_update_job(job_id, failed_files=json.dumps(failed))
-        db_mark_file_processed(job_id, filename, "failed", duration)
         job_log(job_id, f"Error on {filename}: {e}")
         print(traceback.format_exc())
         return "failed"
@@ -236,9 +241,44 @@ async def pipeline(job_id: str, folder_url: str):
         if not valid_files:
             raise Exception("No valid images found")
 
-        folder_name, output_folder_id = await asyncio.to_thread(
-            create_output_folder, DRIVE_OUTPUT_FOLDER_ID, "output"
-        )
+        # Reuse the previous output folder for resumable jobs. If it no longer
+        # exists (for example, its 24-hour retention expired), restart from scratch.
+        job_row = db_get_job(job_id)
+        previous_output_id = job_row["output_folder_id"] if job_row else None
+        folder_name = None
+
+        if previous_output_id:
+            try:
+                output_meta = await asyncio.to_thread(
+                    lambda: _get_drive().files().get(
+                        fileId=previous_output_id,
+                        fields="id,name,mimeType,trashed",
+                    ).execute()
+                )
+            except HttpError as e:
+                if getattr(e, "resp", None) is not None and e.resp.status == 404:
+                    output_meta = None
+                else:
+                    raise
+
+            if (
+                output_meta
+                and not output_meta.get("trashed", False)
+                and output_meta.get("mimeType") == "application/vnd.google-apps.folder"
+            ):
+                output_folder_id = previous_output_id
+                folder_name = job_row["result_folder"] or output_meta.get("name")
+                db_remove_pending_deletion(output_folder_id)
+            else:
+                db_remove_pending_deletion(previous_output_id)
+                db_reset_processed_files(job_id)
+
+        if not output_folder_id:
+            # No reusable output folder means prior success records cannot be trusted.
+            db_reset_processed_files(job_id)
+            folder_name, output_folder_id = await asyncio.to_thread(
+                create_output_folder, DRIVE_OUTPUT_FOLDER_ID, "output"
+            )
 
         db_update_job(
             job_id,
@@ -251,13 +291,14 @@ async def pipeline(job_id: str, folder_url: str):
             jobs[job_id]["output_folder_id"] = output_folder_id
             jobs[job_id]["result_folder"]    = folder_name
 
-        already_done  = db_get_processed_files(job_id)
+        available_names = {f["name"] for f in valid_files}
+        already_done = db_get_processed_files(job_id) & available_names
         pending_files = [f for f in valid_files if f["name"] not in already_done]
 
         if already_done:
             job_log(job_id, f"Resume: {len(already_done)} done, {len(pending_files)} remaining")
 
-        batch_size    = get_dynamic_batch_size(len(pending_files))
+        batch_size    = max(1, get_dynamic_batch_size(len(pending_files)))
         success_count = len(already_done)
         failed_count  = 0
         file_times    = []
@@ -297,24 +338,41 @@ async def pipeline(job_id: str, folder_url: str):
         # Finalize
         current_status = db_get_job(job_id)["status"]
         if current_status not in ("cancelled",):
-            all_failed   = (failed_count > 0 and success_count == 0)
-            final_status = "failed" if all_failed else "completed"
+            all_failed = success_count == 0 and (
+                failed_count > 0 or bool(pending_files)
+            )
+            if all_failed:
+                final_status = "failed"
+            elif failed_count > 0:
+                final_status = "completed_with_errors"
+            else:
+                final_status = "completed"
             db_update_job(job_id, status=final_status, finished_at=datetime.now().isoformat())
             if job_id in jobs:
                 jobs[job_id]["status"] = final_status
 
         if output_folder_id:
-            db_schedule_deletion(output_folder_id)
-            delete_at = datetime.utcnow() + timedelta(minutes=OUTPUT_DELETE_DELAY_MINUTES)
+            db_schedule_deletion(output_folder_id, OUTPUT_DELETE_DELAY_MINUTES)
+            delete_at = datetime.now().astimezone() + timedelta(
+                minutes=OUTPUT_DELETE_DELAY_MINUTES
+            )
             if job_id in jobs:
                 jobs[job_id]["delete_at_unix"] = int(delete_at.timestamp())
 
         job_log(job_id, f"Done! ✅ {success_count} berhasil | ❌ {failed_count} gagal")
 
     except Exception as e:
-        db_update_job(job_id, status="failed")
+        db_update_job(job_id, status="failed", finished_at=datetime.now().isoformat())
         if job_id in jobs:
             jobs[job_id]["status"] = "failed"
+        # Preserve partial output for the same retention period after a failed job.
+        if output_folder_id:
+            db_schedule_deletion(output_folder_id, OUTPUT_DELETE_DELAY_MINUTES)
+            delete_at = datetime.now().astimezone() + timedelta(
+                minutes=OUTPUT_DELETE_DELAY_MINUTES
+            )
+            if job_id in jobs:
+                jobs[job_id]["delete_at_unix"] = int(delete_at.timestamp())
         job_log(job_id, f"Pipeline failed: {e}")
         print(traceback.format_exc())
 
