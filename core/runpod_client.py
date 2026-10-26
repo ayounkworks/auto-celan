@@ -175,15 +175,7 @@ async def run_runpod_lama(
         async with aiohttp.ClientSession() as session:
             return await run_runpod_lama(image, mask, label, session)
 
+    # Submit a single async job and poll its ID. Do not fall back from a timed-out
+    # /runsync to a new /run request: the first job may still be executing.
     async with (runpod_sem or asyncio.Lock()):
-        for attempt in range(3):
-            result = await _run_runsync(image, label, http_session)
-            if result is not None:
-                return result
-            result = await _run_poll(image, label, http_session)
-            if result is not None:
-                return result
-            if attempt < 2:
-                print(f"[{label}] attempt {attempt + 1} failed, retrying in 3s...")
-                await asyncio.sleep(3)
-        return None
+        return await _run_poll(image, label, http_session)
