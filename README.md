@@ -125,8 +125,12 @@ Kamu perlu **rebuild & push Docker** hanya kalau:
 ## Environment Variables (.env)
 
 ```env
-GOOGLE_VISION_API_KEY=...
-DRIVE_OUTPUT_FOLDER_ID=...
-RUNPOD_API_KEY=rpa_...          ← WAJIB ada, ini yang bug di versi lama
-RUNPOD_ENDPOINT_ID=3wjmfk65...  ← Opsional, ada default di config.py
+GOOGLE_VISION_API_KEY=...       # Kompatibilitas lama
+DRIVE_OUTPUT_FOLDER_ID=...      # Boleh kosong untuk root Drive
+RUNPOD_API_KEY=...              # Wajib
+RUNPOD_ENDPOINT_ID=...          # Opsional, ada default di config.py
+OUTPUT_DELETE_DELAY_MINUTES=1440 # Default: hapus output 24 jam setelah job selesai
+AUTO_CELAN_API_KEY=...          # Wajib untuk endpoint API; kirim sebagai Bearer token
 ```
+
+Output Drive dijadwalkan untuk dihapus **24 jam setelah job selesai** secara default. Nilai dapat diubah lewat `OUTPUT_DELETE_DELAY_MINUTES`. Endpoint API selain `/health` memerlukan header `Authorization: Bearer <AUTO_CELAN_API_KEY>`; jika key belum disetel, endpoint terlindungi dinonaktifkan.
