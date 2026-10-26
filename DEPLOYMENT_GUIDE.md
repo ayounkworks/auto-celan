@@ -57,7 +57,7 @@ Di Railway dashboard → project kamu → tab **Variables** → tambahkan:
 Copy isi file `token_drive.json` kamu dalam satu baris JSON:
 
 ```
-{"token": "ya29...", "refresh_token": "1//0g...", "token_uri": "https://oauth2.googleapis.com/token", "client_id": "310776...", "client_secret": "GOCSPX-...", "scopes": ["https://www.googleapis.com/auth/drive"]}
+{"token": "<ACCESS_TOKEN>", "refresh_token": "<REFRESH_TOKEN>", "token_uri": "https://oauth2.googleapis.com/token", "client_id": "<OAUTH_CLIENT_ID>", "client_secret": "<OAUTH_CLIENT_SECRET>", "scopes": ["https://www.googleapis.com/auth/drive"]}
 ```
 
 > Ini sudah ditangani di `core/drive.py` — env var `DRIVE_TOKEN_JSON`
@@ -89,6 +89,9 @@ curl https://auto-celan-production.up.railway.app/health
 Sekarang laptop kamu **tidak perlu internet kencang** — cukup kirim 1 POST kecil:
 
 ```bash
+# Isi dengan nilai yang sama seperti AUTO_CELAN_API_KEY di Railway.
+export AUTO_CELAN_API_KEY="<API_KEY_DARI_RAILWAY>"
+
 # Mulai proses folder Drive
 curl -X POST https://auto-celan-production.up.railway.app/clean \
   -H "Authorization: Bearer $AUTO_CELAN_API_KEY" \
