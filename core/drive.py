@@ -137,45 +137,63 @@ def delete_folder(folder_id):
     if not folder_id:
         return False
 
+    svc = _get_drive()
+
+    def _is_not_found(error):
+        return (
+            isinstance(error, HttpError)
+            and getattr(error, "resp", None) is not None
+            and error.resp.status == 404
+        )
+
     try:
-        svc = _get_drive()
+        # Distinguish an already-deleted root from a missing nested item.
+        svc.files().get(fileId=folder_id, fields="id,trashed").execute()
+    except HttpError as e:
+        if _is_not_found(e):
+            return True
+        print(f"Failed to inspect folder {folder_id}: {e}")
+        return False
 
-        def _delete_tree(parent_id):
-            # Fetch every page before deleting children so pagination cannot skip files.
-            children = []
-            page_token = None
-            while True:
-                response = svc.files().list(
-                    q=f"'{parent_id}' in parents and trashed=false",
-                    pageSize=1000,
-                    pageToken=page_token,
-                    fields="nextPageToken,files(id,name,mimeType)",
-                ).execute()
-                children.extend(response.get("files", []))
-                page_token = response.get("nextPageToken")
-                if not page_token:
-                    break
+    def _delete_tree(parent_id):
+        # Fetch every page before deleting children so pagination cannot skip files.
+        children = []
+        page_token = None
+        while True:
+            response = svc.files().list(
+                q=f"'{parent_id}' in parents and trashed=false",
+                pageSize=1000,
+                pageToken=page_token,
+                fields="nextPageToken,files(id,name,mimeType)",
+            ).execute()
+            children.extend(response.get("files", []))
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
 
-            for child in children:
+        for child in children:
+            try:
                 if child.get("mimeType") == "application/vnd.google-apps.folder":
                     _delete_tree(child["id"])
                 else:
                     svc.files().delete(fileId=child["id"]).execute()
+            except HttpError as e:
+                # Another retry/process may already have deleted this child.
+                if not _is_not_found(e):
+                    raise
 
+        try:
             svc.files().delete(fileId=parent_id).execute()
+        except HttpError as e:
+            if not _is_not_found(e):
+                raise
 
+    try:
         _delete_tree(folder_id)
         return True
-    except HttpError as e:
-        # A previous retry may already have removed the target.
-        if getattr(e, "resp", None) is not None and e.resp.status == 404:
-            return True
-        print(f"Failed to delete folder {folder_id}: {e}")
-        return False
     except Exception as e:
         print(f"Failed to delete folder {folder_id}: {e}")
         return False
-
 
 def filter_and_sort_files(files):
     valid   = []
