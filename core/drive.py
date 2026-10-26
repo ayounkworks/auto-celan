@@ -16,6 +16,7 @@ import aiohttp
 from datetime import datetime
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+from googleapiclient.errors import HttpError
 from google.oauth2.credentials import Credentials
 
 from core.config import DRIVE_OUTPUT_FOLDER_ID, VALID_EXTENSIONS
@@ -87,10 +88,12 @@ def create_output_folder(parent_id, prefix="output"):
     ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
     name = f"{prefix}_{ts}"
     meta = {
-        "name"    : name,
+        "name": name,
         "mimeType": "application/vnd.google-apps.folder",
-        "parents" : [parent_id],
     }
+    # Drive root is selected by omitting "parents"; never send [None].
+    if parent_id:
+        meta["parents"] = [parent_id]
     folder = _get_drive().files().create(body=meta, fields="id").execute()
     return name, folder.get("id")
 
@@ -130,9 +133,45 @@ def upload_file(file_bytes, filename, folder_id, mimetype="image/jpeg", _retries
 
 
 def delete_folder(folder_id):
+    """Delete a folder and all nested contents; safe to retry if it is already gone."""
+    if not folder_id:
+        return False
+
     try:
-        _get_drive().files().delete(fileId=folder_id).execute()
+        svc = _get_drive()
+
+        def _delete_tree(parent_id):
+            # Fetch every page before deleting children so pagination cannot skip files.
+            children = []
+            page_token = None
+            while True:
+                response = svc.files().list(
+                    q=f"'{parent_id}' in parents and trashed=false",
+                    pageSize=1000,
+                    pageToken=page_token,
+                    fields="nextPageToken,files(id,name,mimeType)",
+                ).execute()
+                children.extend(response.get("files", []))
+                page_token = response.get("nextPageToken")
+                if not page_token:
+                    break
+
+            for child in children:
+                if child.get("mimeType") == "application/vnd.google-apps.folder":
+                    _delete_tree(child["id"])
+                else:
+                    svc.files().delete(fileId=child["id"]).execute()
+
+            svc.files().delete(fileId=parent_id).execute()
+
+        _delete_tree(folder_id)
         return True
+    except HttpError as e:
+        # A previous retry may already have removed the target.
+        if getattr(e, "resp", None) is not None and e.resp.status == 404:
+            return True
+        print(f"Failed to delete folder {folder_id}: {e}")
+        return False
     except Exception as e:
         print(f"Failed to delete folder {folder_id}: {e}")
         return False
