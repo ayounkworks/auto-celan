@@ -110,10 +110,11 @@ async def api_upload_images_form(
     ts          = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     folder_name = label or f"Upload_{ts}"
     meta = {
-        "name":     folder_name,
+        "name": folder_name,
         "mimeType": "application/vnd.google-apps.folder",
-        "parents":  [DRIVE_OUTPUT_FOLDER_ID],
     }
+    if DRIVE_OUTPUT_FOLDER_ID:
+        meta["parents"] = [DRIVE_OUTPUT_FOLDER_ID]
     folder    = await asyncio.to_thread(
         lambda: _get_drive().files().create(body=meta, fields="id").execute()
     )
