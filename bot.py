@@ -27,7 +27,9 @@ if not DISCORD_TOKEN:
     sys.exit(1)
 
 from core.config   import OUTPUT_DELETE_DELAY_MINUTES
-from core.runtime_config import RUNPOD_MAX_IN_FLIGHT, MAX_CONCURRENT_FOLDER_JOBS
+from core.runtime_config import (
+    RUNPOD_MAX_IN_FLIGHT, MAX_CONCURRENT_FOLDER_JOBS, MAX_CONCURRENT_DOWNLOADS,
+)
 from core.database import (
     init_db, db_create_job, db_get_job,
     db_register_user, db_update_last_job,
@@ -150,6 +152,7 @@ async def on_ready():
     pipeline_module._http_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
     pipeline_module._warmup_lock  = asyncio.Lock()
     pipeline_module.pipeline_sem  = asyncio.Semaphore(MAX_CONCURRENT_FOLDER_JOBS)
+    pipeline_module.download_sem = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
     asyncio.create_task(deletion_loop())
     asyncio.create_task(warmup())
@@ -272,6 +275,7 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
                     import core.pipeline      as pl
                     rp.runpod_sem   = _asyncio.Semaphore(RUNPOD_MAX_IN_FLIGHT)
                     pl.pipeline_sem = _asyncio.Semaphore(MAX_CONCURRENT_FOLDER_JOBS)
+                    pl.download_sem = _asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
                     pl._warmup_lock = _asyncio.Lock()
 
                     connector = _aiohttp.TCPConnector(limit=30, ttl_dns_cache=300, family=_socket.AF_INET)

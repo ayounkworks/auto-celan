@@ -2,6 +2,9 @@ import pytest
 
 from core.runtime_config import (
     MAX_CONCURRENT_FOLDER_JOBS,
+    MAX_CONCURRENT_DOWNLOADS,
+    MAX_DOWNLOAD_BYTES,
+    MAX_SOURCE_PIXELS,
     RUNPOD_MAX_IN_FLIGHT,
     positive_int_env,
 )
@@ -27,6 +30,9 @@ def test_positive_int_env_uses_safe_default(raw, expected):
 def test_runtime_defaults_match_single_folder_ten_worker_topology():
     assert RUNPOD_MAX_IN_FLIGHT == 10
     assert MAX_CONCURRENT_FOLDER_JOBS == 1
+    assert MAX_CONCURRENT_DOWNLOADS == 3
+    assert MAX_DOWNLOAD_BYTES == 30 * 1024 * 1024
+    assert MAX_SOURCE_PIXELS == 50_000_000
 
 
 def test_positive_int_env_rejects_invalid_default():

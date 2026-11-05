@@ -54,6 +54,9 @@ Di Railway dashboard → project kamu → tab **Variables** → tambahkan:
 | `MAX_BATCH_SIZE` | `10` — batas file per batch Railway |
 | `RUNPOD_MAX_IN_FLIGHT` | `10` — batas request gambar aktif dari Railway ke RunPod (dipakai Discord dan FastAPI) |
 | `MAX_CONCURRENT_FOLDER_JOBS` | `1` — jumlah folder job yang boleh berjalan bersamaan (dipakai Discord dan FastAPI) |
+| `MAX_CONCURRENT_DOWNLOADS` | `3` — batas download Google Drive yang berlangsung bersamaan |
+| `MAX_DOWNLOAD_BYTES` | `31457280` — batas ukuran satu file download (30 MiB) |
+| `MAX_SOURCE_PIXELS` | `50000000` — batas jumlah piksel sumber sebelum decode penuh di Railway |
 
 ### Nilai `DRIVE_TOKEN_JSON`
 
@@ -152,6 +155,10 @@ Konfigurasikan variabel `RESULT_S3_*` pada RunPod worker, bukan Railway. Impleme
 Jika object storage belum dikonfigurasi, output Base64 hanya diizinkan sampai `MAX_BASE64_OUTPUT_BYTES` (default 4 MiB). Output lebih besar akan gagal dengan pesan konfigurasi yang eksplisit, bukan mengirim payload besar yang berisiko ditolak endpoint. Client Railway sudah mendukung pengambilan hasil dari URL HTTP(S).
 
 Input Webtoon yang melewati batas inferensi akan diperkecil secara proporsional sebelum YOLO/LaMa. Sumber di atas `MAX_DECODE_PIXELS` tetap ditolak sebelum decode penuh untuk melindungi RAM worker. Hasil yang di-resize tetap dikembalikan ke dimensi sumber sesuai perilaku handler sebelumnya. Jangan menaikkan `MAX_INPUT_PIXELS`, `MAX_DECODE_PIXELS`, atau concurrency sebelum memeriksa VRAM dan RAM worker. Pengiriman hasil masih menggunakan Base64; log worker sekarang mencatat ukuran JPEG untuk membantu mengidentifikasi apakah HTTP 400 berkaitan dengan ukuran payload.
+
+## Download and memory safety
+
+Railway membatasi download Drive menjadi 3 file paralel, memotong download di atas 30 MiB per file, dan memeriksa dimensi sumber sebelum decode penuh. Atur batas ini berdasarkan RAM Railway dan ukuran komik aktual; file yang melewati batas akan gagal secara eksplisit, bukan menghabiskan memori tanpa batas.
 
 ## Google Drive folder listing
 

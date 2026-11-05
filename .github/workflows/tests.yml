@@ -24,4 +24,4 @@ jobs:
       - name: Install test dependency
         run: python -m pip install pytest
       - name: Test database resume, retention, and runtime configuration
-        run: python -m pytest -q test/test_database_state.py test/test_runtime_config.py test/test_job_control.py test/test_image_limits.py test/test_pagination.py test/test_result_storage.py
+        run: python -m pytest -q test/test_database_state.py test/test_runtime_config.py test/test_job_control.py test/test_image_limits.py test/test_pagination.py test/test_result_storage.py test/test_image_safety.py

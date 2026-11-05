@@ -28,3 +28,8 @@ def positive_int_env(
 # the configured RunPod worker pool.
 RUNPOD_MAX_IN_FLIGHT = positive_int_env("RUNPOD_MAX_IN_FLIGHT", 10)
 MAX_CONCURRENT_FOLDER_JOBS = positive_int_env("MAX_CONCURRENT_FOLDER_JOBS", 1)
+
+# Bound concurrent Drive downloads and per-image memory use.
+MAX_CONCURRENT_DOWNLOADS = positive_int_env("MAX_CONCURRENT_DOWNLOADS", 3)
+MAX_DOWNLOAD_BYTES = positive_int_env("MAX_DOWNLOAD_BYTES", 30 * 1024 * 1024)
+MAX_SOURCE_PIXELS = positive_int_env("MAX_SOURCE_PIXELS", 50_000_000)
