@@ -126,9 +126,9 @@ Set these variables on the **RunPod endpoint / worker template**, not on Railway
 ## RunPod stability settings
 
 Versi stabilitas awal membatasi beban secara konservatif:
-- Maksimal satu folder job berjalan pada satu waktu.
-- Maksimal dua request RunPod aktif dari job tersebut.
-- Batch download Railway dibatasi empat file.
+- Maksimal `MAX_CONCURRENT_FOLDER_JOBS` folder job berjalan bersamaan (default 1).
+- Maksimal `RUNPOD_MAX_IN_FLIGHT` request RunPod aktif per proses aplikasi (default 10).
+- Batch download Railway dibatasi `MAX_BATCH_SIZE` file (default 10).
 - Warmup hanya dianggap berhasil jika RunPod mengembalikan status `COMPLETED`.
 - Error worker dan output gambar yang tidak valid dicatat sebagai kegagalan eksplisit.
 
