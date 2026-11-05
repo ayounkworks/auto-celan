@@ -116,7 +116,8 @@ def encode_jpeg(
         )
         return stored["url"]
 
-    ensure_base64_fallback_allowed(len(jpeg_bytes), MAX_BASE64_OUTPUT_BYTES)
+    encoded_size = 4 * ((len(jpeg_bytes) + 2) // 3) + len("data:image/jpeg;base64,")
+    ensure_base64_fallback_allowed(encoded_size, MAX_BASE64_OUTPUT_BYTES)
     encoded = base64.b64encode(jpeg_bytes).decode("ascii")
     print(
         f"[output] JPEG bytes={len(jpeg_bytes)} base64_chars={len(encoded)} "
