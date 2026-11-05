@@ -36,7 +36,7 @@ from core.image_processing import to_bytes, progress_bar, format_eta, get_dynami
 from core.runpod_client import run_runpod_lama
 from core.job_control import cancellation_requested, determine_final_status
 from core.image_safety import validate_source_pixels
-from core.runtime_config import MAX_CONCURRENT_DOWNLOADS, MAX_SOURCE_PIXELS
+from core.runtime_config import MAX_SOURCE_PIXELS
 
 # ── Shared State ──────────────────────────────────────────
 pipeline_sem:  Optional[asyncio.Semaphore]     = None
