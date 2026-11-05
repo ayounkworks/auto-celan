@@ -35,11 +35,14 @@ from core.drive import (
 from core.image_processing import to_bytes, progress_bar, format_eta, get_dynamic_batch_size
 from core.runpod_client import run_runpod_lama
 from core.job_control import cancellation_requested, determine_final_status
+from core.image_safety import validate_source_pixels
+from core.runtime_config import MAX_CONCURRENT_DOWNLOADS, MAX_SOURCE_PIXELS
 
 # ── Shared State ──────────────────────────────────────────
 pipeline_sem:  Optional[asyncio.Semaphore]     = None
 _warmup_lock:  Optional[asyncio.Lock]          = None
 _http_session: Optional[aiohttp.ClientSession] = None
+download_sem: Optional[asyncio.Semaphore] = None
 _runpod_warmed = False
 
 jobs           = {}
@@ -146,18 +149,31 @@ async def process_image(
         job_log(job_id, f"Processing {filename}")
 
         # Download gambar
-        raw = await asyncio.wait_for(
-            download_file_async(file_id, _http_session),
-            timeout=FETCH_TIMEOUT,
-        )
+        async def _download():
+            return await asyncio.wait_for(
+                download_file_async(file_id, _http_session),
+                timeout=FETCH_TIMEOUT,
+            )
 
-        # Resize jika terlalu lebar
+        if download_sem is None:
+            raw = await _download()
+        else:
+            async with download_sem:
+                raw = await _download()
+
+        # Inspect dimensions before full decode; reject oversized sources early.
         def load_image():
-            img = Image.open(raw).convert("RGB")
+            raw.seek(0)
+            with Image.open(raw) as source:
+                validate_source_pixels(
+                    source.width, source.height, MAX_SOURCE_PIXELS
+                )
+                source.load()
+                img = source.convert("RGB")
             if img.width > MAX_WIDTH:
                 ratio = MAX_WIDTH / img.width
                 img   = img.resize(
-                    (MAX_WIDTH, int(img.height * ratio)), Image.LANCZOS
+                    (MAX_WIDTH, max(1, int(img.height * ratio))), Image.LANCZOS
                 )
             return img
 
