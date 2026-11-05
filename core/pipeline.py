@@ -47,7 +47,7 @@ cancelled_jobs = set()
 
 LOG_MAX_ENTRIES = 100
 FETCH_TIMEOUT   = 90
-MAX_BATCH_SIZE  = max(1, int(os.getenv("MAX_BATCH_SIZE", "4")))
+MAX_BATCH_SIZE  = max(1, int(os.getenv("MAX_BATCH_SIZE", "10")))
 
 
 def job_log(job_id, message):
