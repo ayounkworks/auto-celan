@@ -47,6 +47,7 @@ cancelled_jobs = set()
 
 LOG_MAX_ENTRIES = 100
 FETCH_TIMEOUT   = 90
+MAX_BATCH_SIZE  = max(1, int(os.getenv("MAX_BATCH_SIZE", "10")))
 
 
 def job_log(job_id, message):
@@ -95,26 +96,35 @@ async def warmup(job_id=None):
                 "Content-Type":  "application/json",
             }
             t0 = time.time()
+            warmup_ok = False
             try:
                 async with _http_session.post(
                     f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/runsync",
                     headers=headers, json=payload,
                     timeout=aiohttp.ClientTimeout(total=60),
                 ) as r:
-                    elapsed  = time.time() - t0
-                    status   = (await r.json()).get("status", "?") if r.status == 200 else f"HTTP {r.status}"
-                    done_msg = f"✅ RunPod warm ({elapsed:.1f}s) — {status}"
+                    elapsed = time.time() - t0
+                    if r.status == 200:
+                        response = await r.json()
+                        status = response.get("status", "?")
+                        warmup_ok = status == "COMPLETED"
+                        done_msg = f"RunPod warm ({elapsed:.1f}s) — {status}"
+                        if not warmup_ok:
+                            done_msg += f" — {str(response.get('error') or response.get('output') or '')[:300]}"
+                    else:
+                        body = (await r.text())[:500]
+                        done_msg = f"Warmup HTTP {r.status} ({elapsed:.1f}s): {body}"
             except asyncio.TimeoutError:
-                done_msg = "⚠️ Warmup timeout — lanjut saja"
+                done_msg = "Warmup timeout — worker readiness not confirmed"
             except Exception as e:
-                done_msg = f"⚠️ Warmup error ({e})"
+                done_msg = f"Warmup error ({e})"
             print(done_msg)
             if job_id:
                 job_log(job_id, done_msg)
+            _runpod_warmed = warmup_ok
         except Exception as e:
-            print(f"⚠️ Warmup skip: {e}")
-        finally:
-            _runpod_warmed = True
+            _runpod_warmed = False
+            print(f"Warmup skip: {e}")
 
 
 # ── Process Single Image ──────────────────────────────────
@@ -298,7 +308,10 @@ async def pipeline(job_id: str, folder_url: str):
         if already_done:
             job_log(job_id, f"Resume: {len(already_done)} done, {len(pending_files)} remaining")
 
-        batch_size    = max(1, get_dynamic_batch_size(len(pending_files)))
+        batch_size    = min(
+            MAX_BATCH_SIZE,
+            max(1, get_dynamic_batch_size(len(pending_files))),
+        )
         success_count = len(already_done)
         failed_count  = 0
         file_times    = []

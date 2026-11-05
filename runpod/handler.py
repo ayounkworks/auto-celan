@@ -35,10 +35,12 @@ PADDING       = 15
 SLICE_HEIGHT  = 1500
 SLICE_OVERLAP = 200
 MAX_HEIGHT    = 20000
+MAX_INPUT_PIXELS = int(os.getenv("MAX_INPUT_PIXELS", "25000000"))
+OUTPUT_JPEG_QUALITY = int(os.getenv("OUTPUT_JPEG_QUALITY", "92"))
 
-# Two-pass blend config
-REFINE        = True   # set False untuk menonaktifkan two-pass blending
-REFINE_SCALE  = 0.5   # resolusi rendah untuk guide
+# Two-pass blend config. Set LAMA_REFINE=false to benchmark single-pass.
+REFINE        = os.getenv("LAMA_REFINE", "true").strip().lower() in {"1", "true", "yes", "on"}
+REFINE_SCALE  = 0.5
 
 # ── Load YOLO ─────────────────────────────────────────────
 print(f"[init] Device: {DEVICE}")
@@ -89,10 +91,12 @@ def strip_prefix(data: str) -> str:
 def decode_rgb(data: str) -> Image.Image:
     return Image.open(BytesIO(base64.b64decode(strip_prefix(data)))).convert("RGB")
 
-def encode_jpeg(img: Image.Image, quality: int = 92) -> str:
+def encode_jpeg(img: Image.Image, quality: int = OUTPUT_JPEG_QUALITY) -> str:
     buf = BytesIO()
-    img.save(buf, format="JPEG", quality=quality)
-    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("utf-8")
+    img.save(buf, format="JPEG", quality=quality, optimize=True)
+    encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+    print(f"[output] JPEG bytes={buf.tell()} base64_chars={len(encoded)} quality={quality}")
+    return "data:image/jpeg;base64," + encoded
 
 
 # ── YOLO detection ────────────────────────────────────────
@@ -254,7 +258,14 @@ def handler(job):
 
         image = decode_rgb(inp["image"])
         orig_w, orig_h = image.size
-        print(f"Image: {image.size}")
+        pixel_count = orig_w * orig_h
+        print(f"Image: {image.size} pixels={pixel_count:,}")
+        if pixel_count > MAX_INPUT_PIXELS:
+            raise ValueError(
+                f"Input image too large: {orig_w}x{orig_h}={pixel_count:,} pixels; "
+                f"limit is {MAX_INPUT_PIXELS:,}. Increase MAX_INPUT_PIXELS only "
+                "after validating GPU memory and endpoint limits."
+            )
 
         # Auto-resize jika terlalu panjang
         was_resized = False
@@ -295,7 +306,10 @@ def handler(job):
     except Exception as e:
         print("Handler error:", repr(e))
         traceback.print_exc()
-        return {"error": str(e)}
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        # Raise so RunPod marks this job FAILED instead of COMPLETED with an error dict.
+        raise
 
 
 runpod.serverless.start({"handler": handler})

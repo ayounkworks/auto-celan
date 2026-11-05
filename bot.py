@@ -120,7 +120,7 @@ intents = discord.Intents.default()
 bot     = discord.Client(intents=intents)
 tree    = app_commands.CommandTree(bot)
 
-_pipeline_executor       = ThreadPoolExecutor(max_workers=4, thread_name_prefix="pipeline")
+_pipeline_executor       = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pipeline")
 _global_job_sem: asyncio.Semaphore = None
 
 
@@ -133,7 +133,8 @@ async def on_ready():
     init_db()
 
     if _global_job_sem is None:
-        _global_job_sem = asyncio.Semaphore(2)
+        # One folder job at a time; image-level concurrency is configurable up to the RunPod worker limit.
+        _global_job_sem = asyncio.Semaphore(1)
 
     if pipeline_module._http_session and not pipeline_module._http_session.closed:
         await pipeline_module._http_session.close()
@@ -142,7 +143,7 @@ async def on_ready():
     connector = aiohttp.TCPConnector(limit=30, ttl_dns_cache=300, family=socket.AF_INET)
     pipeline_module._http_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
     pipeline_module._warmup_lock  = asyncio.Lock()
-    pipeline_module.pipeline_sem  = asyncio.Semaphore(10)
+    pipeline_module.pipeline_sem  = asyncio.Semaphore(1)
 
     asyncio.create_task(deletion_loop())
     asyncio.create_task(warmup())
@@ -263,8 +264,8 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
                 async def _inner():
                     import core.runpod_client as rp
                     import core.pipeline      as pl
-                    rp.runpod_sem   = _asyncio.Semaphore(10)
-                    pl.pipeline_sem = _asyncio.Semaphore(10)
+                    rp.runpod_sem   = _asyncio.Semaphore(max(1, int(os.getenv("RUNPOD_MAX_IN_FLIGHT", "10"))))
+                    pl.pipeline_sem = _asyncio.Semaphore(1)
                     pl._warmup_lock = _asyncio.Lock()
 
                     connector = _aiohttp.TCPConnector(limit=30, ttl_dns_cache=300, family=_socket.AF_INET)
@@ -284,7 +285,7 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
         try:
             global _global_job_sem
             if _global_job_sem is None:
-                _global_job_sem = asyncio.Semaphore(2)
+                _global_job_sem = asyncio.Semaphore(1)
 
             async with _global_job_sem:
                 pipeline_task = asyncio.create_task(_run_pipeline())
