@@ -133,7 +133,7 @@ async def on_ready():
     init_db()
 
     if _global_job_sem is None:
-        # Conservative initial load: one folder job and two GPU requests in flight.
+        # One folder job at a time; image-level concurrency is configurable up to the RunPod worker limit.
         _global_job_sem = asyncio.Semaphore(1)
 
     if pipeline_module._http_session and not pipeline_module._http_session.closed:
@@ -264,7 +264,7 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
                 async def _inner():
                     import core.runpod_client as rp
                     import core.pipeline      as pl
-                    rp.runpod_sem   = _asyncio.Semaphore(2)
+                    rp.runpod_sem   = _asyncio.Semaphore(max(1, int(os.getenv("RUNPOD_MAX_IN_FLIGHT", "10"))))
                     pl.pipeline_sem = _asyncio.Semaphore(1)
                     pl._warmup_lock = _asyncio.Lock()
 
