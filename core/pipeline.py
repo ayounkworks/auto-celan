@@ -155,16 +155,10 @@ async def process_image(
                 timeout=FETCH_TIMEOUT,
             )
 
-        if download_sem is None:
-            raw = await _download()
-        else:
-            async with download_sem:
-                raw = await _download()
-
         # Inspect dimensions before full decode; reject oversized sources early.
-        def load_image():
-            raw.seek(0)
-            with Image.open(raw) as source:
+        def load_image(raw_file):
+            raw_file.seek(0)
+            with Image.open(raw_file) as source:
                 validate_source_pixels(
                     source.width, source.height, MAX_SOURCE_PIXELS
                 )
@@ -177,7 +171,14 @@ async def process_image(
                 )
             return img
 
-        img = await asyncio.to_thread(load_image)
+        # Bound the combined download + decode window, not just network reads.
+        if download_sem is None:
+            raw = await _download()
+            img = await asyncio.to_thread(load_image, raw)
+        else:
+            async with download_sem:
+                raw = await _download()
+                img = await asyncio.to_thread(load_image, raw)
         if cancellation_requested(job_id, cancelled_jobs):
             job_log(job_id, f"Cancellation checkpoint: skipped RunPod for {filename}")
             return "cancelled"
