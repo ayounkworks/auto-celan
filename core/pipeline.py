@@ -238,6 +238,15 @@ async def pipeline(job_id: str, folder_url: str):
     output_folder_id = None
 
     try:
+        if cancellation_requested(job_id, cancelled_jobs):
+            finished_at = datetime.now().isoformat()
+            db_update_job(job_id, status="cancelled", finished_at=finished_at)
+            if job_id in jobs:
+                jobs[job_id]["status"] = "cancelled"
+                jobs[job_id]["finished_at"] = finished_at
+            job_log(job_id, "Cancelled before folder processing started")
+            return
+
         db_update_job(job_id, status="running")
         if job_id in jobs:
             jobs[job_id]["status"] = "running"
@@ -382,7 +391,10 @@ async def pipeline(job_id: str, folder_url: str):
             cancel_requested=cancel_requested,
             success_count=success_count,
             failed_count=failed_count,
-            pending_count=max(0, len(pending_files) - success_count - failed_count),
+            pending_count=max(
+                0,
+                len(pending_files) - (success_count - len(already_done)) - failed_count,
+            ),
         )
         finished_at = datetime.now().isoformat()
         db_update_job(job_id, status=final_status, finished_at=finished_at)
