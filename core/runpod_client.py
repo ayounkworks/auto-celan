@@ -14,6 +14,7 @@ import aiohttp
 from PIL import Image
 
 from core.config import RUNPOD_API_KEY, RUNPOD_ENDPOINT_ID
+from core.retry_policy import is_retryable_http_status, poll_backoff_seconds
 
 runpod_sem: Optional[asyncio.Semaphore] = None
 
@@ -21,6 +22,7 @@ POLL_INTERVAL   = 1.5
 POLL_MAX        = 180
 MAX_JOB_RETRIES = 1
 RETRY_BACKOFF   = 2.0
+MAX_CONSECUTIVE_POLL_ERRORS = 5
 
 
 def normalize_b64(data: str):
@@ -99,7 +101,7 @@ async def _run_poll(
             ) as r:
                 if r.status != 200:
                     body = (await r.text())[:1000]
-                    if r.status in (429, 502, 503, 504) and attempt < MAX_JOB_RETRIES:
+                    if is_retryable_http_status(r.status) and attempt < MAX_JOB_RETRIES:
                         await asyncio.sleep(RETRY_BACKOFF * (attempt + 1))
                         continue
                     raise RuntimeError(f"RunPod submit HTTP {r.status}: {body}")
@@ -113,6 +115,7 @@ async def _run_poll(
             raise RuntimeError(f"RunPod response has no job ID: {str(data)[:1000]}")
 
         terminal_error = None
+        consecutive_poll_errors = 0
         for poll_index in range(POLL_MAX):
             await asyncio.sleep(POLL_INTERVAL)
             try:
@@ -122,11 +125,44 @@ async def _run_poll(
                 ) as s:
                     if s.status != 200:
                         body = (await s.text())[:500]
-                        print(f"[{label}] status HTTP {s.status} job={job_id}: {body}")
+                        if not is_retryable_http_status(s.status):
+                            raise RuntimeError(
+                                f"RunPod status HTTP {s.status} job={job_id}: {body}"
+                            )
+                        consecutive_poll_errors += 1
+                        if consecutive_poll_errors > MAX_CONSECUTIVE_POLL_ERRORS:
+                            raise RuntimeError(
+                                f"RunPod status polling failed {consecutive_poll_errors} "
+                                f"consecutive times for job={job_id}; job may still be running. "
+                                "Check RunPod status before retrying."
+                            )
+                        delay = poll_backoff_seconds(consecutive_poll_errors)
+                        print(
+                            f"[{label}] transient status HTTP {s.status} "
+                            f"job={job_id}; retry {consecutive_poll_errors}/"
+                            f"{MAX_CONSECUTIVE_POLL_ERRORS} in {delay:.1f}s: {body}"
+                        )
+                        await asyncio.sleep(delay)
                         continue
                     sj = await s.json()
+                    consecutive_poll_errors = 0
+            except RuntimeError:
+                raise
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                print(f"[{label}] status poll network error job={job_id}: {e}")
+                consecutive_poll_errors += 1
+                if consecutive_poll_errors > MAX_CONSECUTIVE_POLL_ERRORS:
+                    raise RuntimeError(
+                        f"RunPod status polling had {consecutive_poll_errors} "
+                        f"consecutive network errors for job={job_id}; job may still "
+                        "be running. Check RunPod status before retrying."
+                    ) from e
+                delay = poll_backoff_seconds(consecutive_poll_errors)
+                print(
+                    f"[{label}] status poll network error job={job_id}; retry "
+                    f"{consecutive_poll_errors}/{MAX_CONSECUTIVE_POLL_ERRORS} "
+                    f"in {delay:.1f}s: {e}"
+                )
+                await asyncio.sleep(delay)
                 continue
 
             status = sj.get("status")
