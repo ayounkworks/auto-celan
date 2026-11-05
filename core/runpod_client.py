@@ -31,12 +31,14 @@ def normalize_b64(data: str):
     return data
 
 
-def _build_payload(image: Image.Image) -> dict:
+def _build_payload(image: Image.Image, job_id=None, filename=None) -> dict:
     buf = BytesIO()
     image.save(buf, format="JPEG", quality=95)
     return {
         "input": {
             "image": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode(),
+            "job_id": job_id,
+            "filename": filename,
         }
     }
 
@@ -82,8 +84,10 @@ def _is_retryable_worker_error(message: str) -> bool:
     return any(marker in message for marker in markers)
 
 
-async def _run_poll(image: Image.Image, label="", http_session=None) -> Image.Image:
-    payload = _build_payload(image)
+async def _run_poll(
+    image: Image.Image, label="", http_session=None, job_id=None, filename=None
+) -> Image.Image:
+    payload = _build_payload(image, job_id=job_id, filename=filename)
     headers = {"Authorization": f"Bearer {RUNPOD_API_KEY}", "Content-Type": "application/json"}
     start = time.time()
 
@@ -153,14 +157,16 @@ async def run_runpod_lama(
     mask,           # diabaikan — mask dibuat di RunPod oleh YOLO
     label="",
     http_session=None,
+    job_id=None,
+    filename=None,
 ) -> Optional[Image.Image]:
     if http_session is None:
         async with aiohttp.ClientSession() as session:
-            return await run_runpod_lama(image, mask, label, session)
+            return await run_runpod_lama(image, mask, label, session, job_id, filename)
 
     # The application injects a shared semaphore at startup. A fresh lock per
     # call would not limit concurrency across simultaneous requests.
     if runpod_sem is None:
-        return await _run_poll(image, label, http_session)
+        return await _run_poll(image, label, http_session, job_id, filename)
     async with runpod_sem:
         return await _run_poll(image, label, http_session)
