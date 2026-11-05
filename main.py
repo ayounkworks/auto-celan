@@ -34,7 +34,7 @@ from pydantic import BaseModel
 from core.config import DRIVE_OUTPUT_FOLDER_ID
 from core.runtime_config import RUNPOD_MAX_IN_FLIGHT, MAX_CONCURRENT_FOLDER_JOBS
 from core.database import init_db, db_create_job, db_get_job
-from core.drive import extract_folder_id, filter_and_sort_files, upload_file, _get_drive
+from core.drive import extract_folder_id, filter_and_sort_files, upload_file, _get_drive, list_folder_files
 from core.image_processing import progress_bar, format_eta
 
 import core.runpod_client as runpod_module
@@ -104,14 +104,8 @@ async def scan_folder_endpoint(req: ScanRequest):
     try:
         folder_id = extract_folder_id(req.folder_url)
 
-        def _list():
-            return _get_drive().files().list(
-                q=f"'{folder_id}' in parents and trashed=false",
-                fields="files(id, name)"
-            ).execute()
-
-        result = await asyncio.to_thread(_list)
-        valid, skipped = filter_and_sort_files(result.get("files", []))
+        all_files = await asyncio.to_thread(list_folder_files, folder_id)
+        valid, skipped = filter_and_sort_files(all_files)
         return {
             "file_count":   len(valid),
             "skipped_count": len(skipped),
