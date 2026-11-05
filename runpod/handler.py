@@ -36,7 +36,7 @@ SLICE_HEIGHT  = 1500
 SLICE_OVERLAP = 200
 MAX_HEIGHT    = 20000
 MAX_INPUT_PIXELS = int(os.getenv("MAX_INPUT_PIXELS", "25000000"))
-OUTPUT_JPEG_QUALITY = int(os.getenv("OUTPUT_JPEG_QUALITY", "88"))
+OUTPUT_JPEG_QUALITY = int(os.getenv("OUTPUT_JPEG_QUALITY", "92"))
 
 # Two-pass blend config. Set LAMA_REFINE=false to benchmark single-pass.
 REFINE        = os.getenv("LAMA_REFINE", "true").strip().lower() in {"1", "true", "yes", "on"}
