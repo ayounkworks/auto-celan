@@ -171,6 +171,8 @@ async def process_image(
             img, None,
             label=filename,
             http_session=_http_session,
+            job_id=job_id,
+            filename=filename,
         )
 
         if result is None:
