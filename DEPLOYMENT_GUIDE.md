@@ -51,6 +51,10 @@ Di Railway dashboard → project kamu → tab **Variables** → tambahkan:
 | `DRIVE_TOKEN_JSON` | Token OAuth Google Drive dalam format JSON satu baris |
 | `OUTPUT_DELETE_DELAY_MINUTES` | `1440` — hapus output 24 jam setelah job selesai |
 | `AUTO_CELAN_API_KEY` | Buat secret acak panjang untuk proteksi endpoint API |
+| `MAX_BATCH_SIZE` | `4` — batas file yang diunduh/diproses per batch Railway |
+| `LAMA_REFINE` | `true` mempertahankan two-pass; set `false` untuk benchmark single-pass |
+| `OUTPUT_JPEG_QUALITY` | `88` — kualitas JPEG hasil RunPod, rentang valid 1–95 |
+| `MAX_INPUT_PIXELS` | `25000000` — batas pengaman jumlah piksel input RunPod |
 
 ### Nilai `DRIVE_TOKEN_JSON`
 
@@ -109,6 +113,22 @@ curl https://auto-celan-production.up.railway.app/job/abc12345 \
 ```
 
 ---
+
+## RunPod stability settings
+
+Versi stabilitas awal membatasi beban secara konservatif:
+- Maksimal satu folder job berjalan pada satu waktu.
+- Maksimal dua request RunPod aktif dari job tersebut.
+- Batch download Railway dibatasi empat file.
+- Warmup hanya dianggap berhasil jika RunPod mengembalikan status `COMPLETED`.
+- Error worker dan output gambar yang tidak valid dicatat sebagai kegagalan eksplisit.
+
+Untuk membandingkan kualitas dan kecepatan LaMa:
+1. Jalankan batch uji dengan `LAMA_REFINE=true` (two-pass saat ini).
+2. Jalankan batch gambar yang sama dengan `LAMA_REFINE=false` (single-pass).
+3. Bandingkan waktu per gambar dan kualitas pada bubble putih, bubble gelap, tekstur, serta artwork di belakang teks.
+
+Jangan menaikkan `MAX_INPUT_PIXELS` atau concurrency sebelum memeriksa VRAM dan hasil uji. Pengiriman hasil masih menggunakan Base64; log worker sekarang mencatat ukuran JPEG untuk membantu mengidentifikasi apakah HTTP 400 berkaitan dengan ukuran payload.
 
 ## Cara lihat log real-time di Railway
 
