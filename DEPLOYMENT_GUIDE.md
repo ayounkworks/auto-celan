@@ -51,10 +51,7 @@ Di Railway dashboard → project kamu → tab **Variables** → tambahkan:
 | `DRIVE_TOKEN_JSON` | Token OAuth Google Drive dalam format JSON satu baris |
 | `OUTPUT_DELETE_DELAY_MINUTES` | `1440` — hapus output 24 jam setelah job selesai |
 | `AUTO_CELAN_API_KEY` | Buat secret acak panjang untuk proteksi endpoint API |
-| `MAX_BATCH_SIZE` | `4` — batas file yang diunduh/diproses per batch Railway |
-| `LAMA_REFINE` | `true` mempertahankan two-pass; set `false` untuk benchmark single-pass |
-| `OUTPUT_JPEG_QUALITY` | `88` — kualitas JPEG hasil RunPod, rentang valid 1–95 |
-| `MAX_INPUT_PIXELS` | `25000000` — batas pengaman jumlah piksel input RunPod |
+| `MAX_BATCH_SIZE` | `4` — batas file per batch Railway |
 
 ### Nilai `DRIVE_TOKEN_JSON`
 
@@ -113,6 +110,16 @@ curl https://auto-celan-production.up.railway.app/job/abc12345 \
 ```
 
 ---
+
+## RunPod Serverless environment variables
+
+Set these variables on the **RunPod endpoint / worker template**, not on Railway:
+
+| Variable | Value |
+|---|---|
+| `LAMA_REFINE` | `true` mempertahankan two-pass; set `false` untuk benchmark single-pass |
+| `OUTPUT_JPEG_QUALITY` | `88` — kualitas JPEG hasil RunPod, rentang valid 1–95 |
+| `MAX_INPUT_PIXELS` | `25000000` — batas pengaman jumlah piksel input RunPod |
 
 ## RunPod stability settings
 
