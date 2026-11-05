@@ -52,7 +52,8 @@ Di Railway dashboard → project kamu → tab **Variables** → tambahkan:
 | `OUTPUT_DELETE_DELAY_MINUTES` | `1440` — hapus output 24 jam setelah job selesai |
 | `AUTO_CELAN_API_KEY` | Buat secret acak panjang untuk proteksi endpoint API |
 | `MAX_BATCH_SIZE` | `10` — batas file per batch Railway |
-| `RUNPOD_MAX_IN_FLIGHT` | `10` — batas request gambar aktif dari Railway ke RunPod |
+| `RUNPOD_MAX_IN_FLIGHT` | `10` — batas request gambar aktif dari Railway ke RunPod (dipakai Discord dan FastAPI) |
+| `MAX_CONCURRENT_FOLDER_JOBS` | `1` — jumlah folder job yang boleh berjalan bersamaan (dipakai Discord dan FastAPI) |
 
 ### Nilai `DRIVE_TOKEN_JSON`
 
@@ -191,4 +192,4 @@ datacenter, bukan lewat ISP Indonesia.
 
 ### Image-level concurrency
 
-Set `RUNPOD_MAX_IN_FLIGHT=10` dan `MAX_BATCH_SIZE=10` untuk memanfaatkan hingga 10 worker RunPod. Pertahankan satu folder job aktif pada satu waktu. Pastikan concurrency per worker RunPod tetap 1 agar satu GPU tidak menerima beberapa job sekaligus.
+Set `RUNPOD_MAX_IN_FLIGHT=10`, `MAX_BATCH_SIZE=10`, dan `MAX_CONCURRENT_FOLDER_JOBS=1` untuk memanfaatkan hingga 10 worker RunPod. Kedua entry point (Discord dan FastAPI) membaca konfigurasi yang sama. Pastikan concurrency per worker RunPod tetap 1 agar satu GPU tidak menerima beberapa job sekaligus. Nilai default aplikasi: 10 request gambar aktif dan 1 folder job aktif.
