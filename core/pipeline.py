@@ -29,7 +29,7 @@ from core.database import (
     db_record_file_failure, db_clear_file_failure, db_remove_pending_deletion,
 )
 from core.drive import (
-    _get_drive, filter_and_sort_files, create_output_folder,
+    _get_drive, filter_and_sort_files, create_output_folder, list_folder_files,
     upload_file, download_file_async, extract_folder_id, delete_folder,
 )
 from core.image_processing import to_bytes, progress_bar, format_eta, get_dynamic_batch_size
@@ -258,14 +258,7 @@ async def pipeline(job_id: str, folder_url: str):
         job_log(job_id, f"Reading folder: {folder_id}")
         await warmup(job_id)
 
-        def _list_folder():
-            return _get_drive().files().list(
-                q=f"'{folder_id}' in parents and trashed=false",
-                fields="files(id, name)"
-            ).execute()
-
-        result               = await asyncio.to_thread(_list_folder)
-        all_files            = result.get("files", [])
+        all_files            = await asyncio.to_thread(list_folder_files, folder_id)
         valid_files, skipped = filter_and_sort_files(all_files)
 
         if skipped:
