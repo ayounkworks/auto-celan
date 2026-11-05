@@ -36,6 +36,7 @@ from core.drive import extract_folder_id, _get_drive
 import core.runpod_client as runpod_module
 import core.pipeline      as pipeline_module
 from core.pipeline import jobs, cancelled_jobs, run_pipeline, warmup, deletion_loop
+from core.job_control import output_is_available
 
 
 def _make_job_embed(job_id: str, data: dict) -> discord.Embed:
@@ -80,7 +81,7 @@ def _make_job_embed(job_id: str, data: dict) -> discord.Embed:
     if progress and status == "running":
         short = progress[:100] + "..." if len(progress) > 100 else progress
         embed.add_field(name="Last update", value=f"`{short}`", inline=False)
-    if status in ("completed", "completed_with_errors") and output_id:
+    if output_is_available(status, output_id):
         url     = f"https://drive.google.com/drive/folders/{output_id}"
         finished_at = data.get("finished_at")
         try:
@@ -89,8 +90,12 @@ def _make_job_embed(job_id: str, data: dict) -> discord.Embed:
             finished_dt = datetime.now()
         unix_ts = int((finished_dt + timedelta(minutes=OUTPUT_DELETE_DELAY_MINUTES)).timestamp())
         embed.add_field(
-            name="📁 Output Drive",
-            value=f"[Buka folder]({url})\n⏰ Dihapus otomatis <t:{unix_ts}:R>",
+            name="📁 Output Drive" if status != "cancelled" else "📁 Partial Output Drive",
+            value=(
+                f"[Buka folder]({url})\n⏰ Dihapus otomatis <t:{unix_ts}:R>"
+                if status != "cancelled"
+                else f"Job dibatalkan; hasil yang sudah selesai tetap tersedia. [Buka folder]({url})\n⏰ Dihapus otomatis <t:{unix_ts}:R>"
+            ),
             inline=False,
         )
     if failed and failed != "[]":
@@ -362,7 +367,10 @@ async def cmd_cancel(interaction: discord.Interaction, job_id: str):
         return
 
     cancelled_jobs.add(job_id)
-    await interaction.response.send_message(f"🚫 Job `{job_id}` ditandai untuk dibatalkan.", ephemeral=True)
+    await interaction.response.send_message(
+        f"🚫 Job `{job_id}` ditandai untuk dibatalkan. Request GPU yang sedang berjalan akan dibiarkan selesai, tetapi hasilnya tidak akan di-upload jika pembatalan sudah diterima sebelum tahap upload.",
+        ephemeral=True,
+    )
 
 
 if __name__ == "__main__":

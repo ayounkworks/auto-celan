@@ -34,6 +34,7 @@ from core.drive import (
 )
 from core.image_processing import to_bytes, progress_bar, format_eta, get_dynamic_batch_size
 from core.runpod_client import run_runpod_lama
+from core.job_control import cancellation_requested, determine_final_status
 
 # ── Shared State ──────────────────────────────────────────
 pipeline_sem:  Optional[asyncio.Semaphore]     = None
@@ -139,7 +140,7 @@ async def process_image(
     start_time = time.time()
 
     try:
-        if job_id in cancelled_jobs:
+        if cancellation_requested(job_id, cancelled_jobs):
             return "cancelled"
 
         job_log(job_id, f"Processing {filename}")
@@ -161,6 +162,9 @@ async def process_image(
             return img
 
         img = await asyncio.to_thread(load_image)
+        if cancellation_requested(job_id, cancelled_jobs):
+            job_log(job_id, f"Cancellation checkpoint: skipped RunPod for {filename}")
+            return "cancelled"
 
         # Kirim ke RunPod — YOLO + LaMa sekalian di sana
         result = await run_runpod_lama(
@@ -171,6 +175,11 @@ async def process_image(
 
         if result is None:
             raise Exception("RunPod returned None")
+        # A RunPod worker may finish after the user requests cancellation.
+        # Do not upload its result once cancellation has been requested.
+        if cancellation_requested(job_id, cancelled_jobs):
+            job_log(job_id, f"Cancellation checkpoint: discarded result for {filename}")
+            return "cancelled"
 
         # Keep the source file extension and actual encoded format in sync.
         ext = os.path.splitext(filename)[1].lower()
@@ -182,6 +191,10 @@ async def process_image(
         }
         image_format, mimetype = format_by_ext.get(ext, ("JPEG", "image/jpeg"))
         out_buf = to_bytes(result, fmt=image_format, quality=95)
+        if cancellation_requested(job_id, cancelled_jobs):
+            job_log(job_id, f"Cancellation checkpoint: skipped upload for {filename}")
+            return "cancelled"
+
         if local_output_dir:
             out_path = os.path.join(local_output_dir, os.path.basename(filename))
             with open(out_path, "wb") as f:
@@ -225,6 +238,15 @@ async def pipeline(job_id: str, folder_url: str):
     output_folder_id = None
 
     try:
+        if cancellation_requested(job_id, cancelled_jobs):
+            finished_at = datetime.now().isoformat()
+            db_update_job(job_id, status="cancelled", finished_at=finished_at)
+            if job_id in jobs:
+                jobs[job_id]["status"] = "cancelled"
+                jobs[job_id]["finished_at"] = finished_at
+            job_log(job_id, "Cancelled before folder processing started")
+            return
+
         db_update_job(job_id, status="running")
         if job_id in jobs:
             jobs[job_id]["status"] = "running"
@@ -319,7 +341,7 @@ async def pipeline(job_id: str, folder_url: str):
         job_log(job_id, f"Total: {len(pending_files)} files | Batch: {batch_size}")
 
         for i in range(0, len(pending_files), batch_size):
-            if job_id in cancelled_jobs:
+            if cancellation_requested(job_id, cancelled_jobs):
                 job_log(job_id, "Cancelled by user")
                 db_update_job(job_id, status="cancelled")
                 if job_id in jobs:
@@ -341,6 +363,17 @@ async def pipeline(job_id: str, folder_url: str):
                 if r == "success":  success_count += 1
                 elif r == "failed": failed_count  += 1
 
+            if cancellation_requested(job_id, cancelled_jobs):
+                job_log(job_id, "Cancellation requested; current batch has stopped")
+                db_update_job(
+                    job_id, status="cancelled",
+                    finished_at=datetime.now().isoformat(),
+                )
+                if job_id in jobs:
+                    jobs[job_id]["status"] = "cancelled"
+                    jobs[job_id]["finished_at"] = datetime.now().isoformat()
+                break
+
             if file_times:
                 avg         = sum(file_times) / len(file_times)
                 remaining   = len(pending_files) - (i + len(batch))
@@ -350,19 +383,24 @@ async def pipeline(job_id: str, folder_url: str):
 
         # Finalize
         current_status = db_get_job(job_id)["status"]
-        if current_status not in ("cancelled",):
-            all_failed = success_count == 0 and (
-                failed_count > 0 or bool(pending_files)
-            )
-            if all_failed:
-                final_status = "failed"
-            elif failed_count > 0:
-                final_status = "completed_with_errors"
-            else:
-                final_status = "completed"
-            db_update_job(job_id, status=final_status, finished_at=datetime.now().isoformat())
-            if job_id in jobs:
-                jobs[job_id]["status"] = final_status
+        cancel_requested = (
+            current_status == "cancelled"
+            or cancellation_requested(job_id, cancelled_jobs)
+        )
+        final_status = determine_final_status(
+            cancel_requested=cancel_requested,
+            success_count=success_count,
+            failed_count=failed_count,
+            pending_count=max(
+                0,
+                len(pending_files) - (success_count - len(already_done)) - failed_count,
+            ),
+        )
+        finished_at = datetime.now().isoformat()
+        db_update_job(job_id, status=final_status, finished_at=finished_at)
+        if job_id in jobs:
+            jobs[job_id]["status"] = final_status
+            jobs[job_id]["finished_at"] = finished_at
 
         if output_folder_id:
             db_schedule_deletion(output_folder_id, OUTPUT_DELETE_DELAY_MINUTES)
@@ -372,7 +410,13 @@ async def pipeline(job_id: str, folder_url: str):
             if job_id in jobs:
                 jobs[job_id]["delete_at_unix"] = int(delete_at.timestamp())
 
-        job_log(job_id, f"Done! ✅ {success_count} berhasil | ❌ {failed_count} gagal")
+        if final_status == "cancelled":
+            job_log(
+                job_id,
+                f"Cancelled. Partial output retained: {success_count} berhasil | {failed_count} gagal",
+            )
+        else:
+            job_log(job_id, f"Done! ✅ {success_count} berhasil | ❌ {failed_count} gagal")
 
     except Exception as e:
         db_update_job(job_id, status="failed", finished_at=datetime.now().isoformat())
