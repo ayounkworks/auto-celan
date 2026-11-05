@@ -123,6 +123,13 @@ Set these variables on the **RunPod endpoint / worker template**, not on Railway
 | `OUTPUT_JPEG_QUALITY` | `92` — kualitas JPEG hasil RunPod, rentang valid 1–95 |
 | `MAX_INPUT_PIXELS` | `25000000` — batas piksel setelah resize untuk YOLO/LaMa |
 | `MAX_DECODE_PIXELS` | `50000000` — batas piksel sumber sebelum decode penuh, untuk melindungi RAM worker |
+| `MAX_BASE64_OUTPUT_BYTES` | `4194304` — batas fallback Base64 4 MiB jika object storage belum dikonfigurasi |
+| `RESULT_S3_ENDPOINT_URL` | Endpoint S3-compatible (misalnya Cloudflare R2) |
+| `RESULT_S3_BUCKET` | Nama bucket hasil privat |
+| `RESULT_S3_ACCESS_KEY_ID` | Access key khusus bucket hasil |
+| `RESULT_S3_SECRET_ACCESS_KEY` | Secret key khusus bucket hasil |
+| `RESULT_S3_REGION` | `auto` untuk R2; sesuaikan jika memakai AWS S3 |
+| `RESULT_URL_TTL_SECONDS` | `3600` — masa berlaku presigned download URL
 
 ## RunPod stability settings
 
@@ -137,6 +144,12 @@ Untuk membandingkan kualitas dan kecepatan LaMa:
 1. Jalankan batch uji dengan `LAMA_REFINE=true` (two-pass saat ini).
 2. Jalankan batch gambar yang sama dengan `LAMA_REFINE=false` (single-pass).
 3. Bandingkan waktu per gambar dan kualitas pada bubble putih, bubble gelap, tekstur, serta artwork di belakang teks.
+
+### Result object storage (disarankan untuk gambar besar)
+
+Konfigurasikan variabel `RESULT_S3_*` pada RunPod worker, bukan Railway. Implementasi kompatibel dengan AWS S3 dan Cloudflare R2. Bucket sebaiknya privat; worker mengembalikan presigned GET URL yang dibaca Railway. Atur lifecycle rule bucket untuk menghapus prefix `auto-celan/` setelah 1 hari agar file sementara tidak menumpuk. Gunakan access key yang hanya memiliki izin `PutObject` dan `GetObject` pada bucket/prefix tersebut.
+
+Jika object storage belum dikonfigurasi, output Base64 hanya diizinkan sampai `MAX_BASE64_OUTPUT_BYTES` (default 4 MiB). Output lebih besar akan gagal dengan pesan konfigurasi yang eksplisit, bukan mengirim payload besar yang berisiko ditolak endpoint. Client Railway sudah mendukung pengambilan hasil dari URL HTTP(S).
 
 Input Webtoon yang melewati batas inferensi akan diperkecil secara proporsional sebelum YOLO/LaMa. Sumber di atas `MAX_DECODE_PIXELS` tetap ditolak sebelum decode penuh untuk melindungi RAM worker. Hasil yang di-resize tetap dikembalikan ke dimensi sumber sesuai perilaku handler sebelumnya. Jangan menaikkan `MAX_INPUT_PIXELS`, `MAX_DECODE_PIXELS`, atau concurrency sebelum memeriksa VRAM dan RAM worker. Pengiriman hasil masih menggunakan Base64; log worker sekarang mencatat ukuran JPEG untuk membantu mengidentifikasi apakah HTTP 400 berkaitan dengan ukuran payload.
 
