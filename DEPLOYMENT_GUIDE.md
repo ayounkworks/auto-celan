@@ -160,6 +160,10 @@ Input Webtoon yang melewati batas inferensi akan diperkecil secara proporsional 
 
 Railway membatasi download Drive menjadi 3 file paralel, memotong download di atas 30 MiB per file, dan memeriksa dimensi sumber sebelum decode penuh. Atur batas ini berdasarkan RAM Railway dan ukuran komik aktual; file yang melewati batas akan gagal secara eksplisit, bukan menghabiskan memori tanpa batas.
 
+## RunPod polling and retry behavior
+
+RunPod submit retries are limited to transient HTTP statuses (429, 500, 502, 503, 504). Status polling retries transient HTTP/network failures with capped backoff and stops after 5 consecutive errors. Authentication/permission and other non-retryable HTTP responses fail immediately. If polling stops after a known job ID exists, Auto Celan does not submit a duplicate job; check the RunPod job status before manually retrying.
+
 ## Google Drive folder listing
 
 Folder listing pada pipeline dan endpoint `/scan` menggunakan pagination Google Drive (`nextPageToken`) sampai seluruh halaman terbaca. Jadi folder dengan lebih dari 1.000 item tidak berhenti di halaman pertama.
