@@ -32,7 +32,9 @@ from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPE
 from pydantic import BaseModel
 
 from core.config import DRIVE_OUTPUT_FOLDER_ID
-from core.runtime_config import RUNPOD_MAX_IN_FLIGHT, MAX_CONCURRENT_FOLDER_JOBS
+from core.runtime_config import (
+    RUNPOD_MAX_IN_FLIGHT, MAX_CONCURRENT_FOLDER_JOBS, MAX_CONCURRENT_DOWNLOADS,
+)
 from core.database import init_db, db_create_job, db_get_job
 from core.drive import extract_folder_id, filter_and_sort_files, upload_file, _get_drive, list_folder_files
 from core.image_processing import progress_bar, format_eta
@@ -51,6 +53,7 @@ async def lifespan(app: FastAPI):
     runpod_module.runpod_sem     = asyncio.Semaphore(RUNPOD_MAX_IN_FLIGHT)
     pipeline_module._warmup_lock = asyncio.Lock()
     pipeline_module.pipeline_sem = asyncio.Semaphore(MAX_CONCURRENT_FOLDER_JOBS)
+    pipeline_module.download_sem = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
     timeout   = aiohttp.ClientTimeout(total=300, connect=20, sock_connect=20, sock_read=300)
     connector = aiohttp.TCPConnector(limit=30, ttl_dns_cache=300, family=socket.AF_INET)
