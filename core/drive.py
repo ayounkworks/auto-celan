@@ -20,6 +20,7 @@ from googleapiclient.errors import HttpError
 from google.oauth2.credentials import Credentials
 
 from core.config import DRIVE_OUTPUT_FOLDER_ID, VALID_EXTENSIONS
+from core.pagination import collect_all_pages
 
 # ── Credentials ───────────────────────────────────────────
 
@@ -97,6 +98,26 @@ def create_output_folder(parent_id, prefix="output"):
     folder = _get_drive().files().create(body=meta, fields="id").execute()
     return name, folder.get("id")
 
+
+
+def list_folder_files(folder_id, page_size=1000):
+    """List every non-trashed child file in a Google Drive folder."""
+    if not folder_id:
+        raise ValueError("Folder ID tidak boleh kosong")
+
+    service = _get_drive()
+
+    def fetch_page(page_token):
+        params = {
+            "q": f"'{folder_id}' in parents and trashed=false",
+            "pageSize": page_size,
+            "fields": "nextPageToken,files(id,name,mimeType)",
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        return service.files().list(**params).execute()
+
+    return collect_all_pages(fetch_page)
 
 def download_file(file_id):
     svc     = _get_drive()
