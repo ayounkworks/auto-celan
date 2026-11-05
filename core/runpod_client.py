@@ -169,4 +169,4 @@ async def run_runpod_lama(
     if runpod_sem is None:
         return await _run_poll(image, label, http_session, job_id, filename)
     async with runpod_sem:
-        return await _run_poll(image, label, http_session)
+        return await _run_poll(image, label, http_session, job_id, filename)
