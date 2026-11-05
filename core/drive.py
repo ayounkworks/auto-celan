@@ -21,6 +21,8 @@ from google.oauth2.credentials import Credentials
 
 from core.config import DRIVE_OUTPUT_FOLDER_ID, VALID_EXTENSIONS
 from core.pagination import collect_all_pages
+from core.image_safety import validate_byte_size
+from core.runtime_config import MAX_DOWNLOAD_BYTES
 
 # ── Credentials ───────────────────────────────────────────
 
@@ -256,6 +258,23 @@ async def download_file_async(
         timeout=aiohttp.ClientTimeout(total=timeout),
     ) as resp:
         if resp.status != 200:
-            raise Exception(f"Drive download failed: {resp.status} for {file_id}")
-        data = await resp.read()
-        return io.BytesIO(data)
+            body = (await resp.text())[:500]
+            raise Exception(
+                f"Drive download failed: {resp.status} for {file_id}: {body}"
+            )
+
+        content_length = resp.headers.get("Content-Length")
+        if content_length:
+            try:
+                validate_byte_size(int(content_length), MAX_DOWNLOAD_BYTES, "Drive file")
+            except ValueError as e:
+                raise ValueError(f"Drive file {file_id}: {e}") from e
+
+        buffer = io.BytesIO()
+        downloaded = 0
+        async for chunk in resp.content.iter_chunked(64 * 1024):
+            downloaded += len(chunk)
+            validate_byte_size(downloaded, MAX_DOWNLOAD_BYTES, "Drive download")
+            buffer.write(chunk)
+        buffer.seek(0)
+        return buffer
