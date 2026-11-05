@@ -51,7 +51,8 @@ Di Railway dashboard → project kamu → tab **Variables** → tambahkan:
 | `DRIVE_TOKEN_JSON` | Token OAuth Google Drive dalam format JSON satu baris |
 | `OUTPUT_DELETE_DELAY_MINUTES` | `1440` — hapus output 24 jam setelah job selesai |
 | `AUTO_CELAN_API_KEY` | Buat secret acak panjang untuk proteksi endpoint API |
-| `MAX_BATCH_SIZE` | `4` — batas file per batch Railway |
+| `MAX_BATCH_SIZE` | `10` — batas file per batch Railway |
+| `RUNPOD_MAX_IN_FLIGHT` | `10` — batas request gambar aktif dari Railway ke RunPod |
 
 ### Nilai `DRIVE_TOKEN_JSON`
 
