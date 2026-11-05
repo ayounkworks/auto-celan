@@ -27,6 +27,7 @@ if not DISCORD_TOKEN:
     sys.exit(1)
 
 from core.config   import OUTPUT_DELETE_DELAY_MINUTES
+from core.runtime_config import RUNPOD_MAX_IN_FLIGHT, MAX_CONCURRENT_FOLDER_JOBS
 from core.database import (
     init_db, db_create_job, db_get_job,
     db_register_user, db_update_last_job,
@@ -134,7 +135,7 @@ async def on_ready():
 
     if _global_job_sem is None:
         # One folder job at a time; image-level concurrency is configurable up to the RunPod worker limit.
-        _global_job_sem = asyncio.Semaphore(1)
+        _global_job_sem = asyncio.Semaphore(MAX_CONCURRENT_FOLDER_JOBS)
 
     if pipeline_module._http_session and not pipeline_module._http_session.closed:
         await pipeline_module._http_session.close()
@@ -143,7 +144,7 @@ async def on_ready():
     connector = aiohttp.TCPConnector(limit=30, ttl_dns_cache=300, family=socket.AF_INET)
     pipeline_module._http_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
     pipeline_module._warmup_lock  = asyncio.Lock()
-    pipeline_module.pipeline_sem  = asyncio.Semaphore(1)
+    pipeline_module.pipeline_sem  = asyncio.Semaphore(MAX_CONCURRENT_FOLDER_JOBS)
 
     asyncio.create_task(deletion_loop())
     asyncio.create_task(warmup())
@@ -264,8 +265,8 @@ async def cmd_clean(interaction: discord.Interaction, folder_url: str):
                 async def _inner():
                     import core.runpod_client as rp
                     import core.pipeline      as pl
-                    rp.runpod_sem   = _asyncio.Semaphore(max(1, int(os.getenv("RUNPOD_MAX_IN_FLIGHT", "10"))))
-                    pl.pipeline_sem = _asyncio.Semaphore(1)
+                    rp.runpod_sem   = _asyncio.Semaphore(RUNPOD_MAX_IN_FLIGHT)
+                    pl.pipeline_sem = _asyncio.Semaphore(MAX_CONCURRENT_FOLDER_JOBS)
                     pl._warmup_lock = _asyncio.Lock()
 
                     connector = _aiohttp.TCPConnector(limit=30, ttl_dns_cache=300, family=_socket.AF_INET)

@@ -52,7 +52,8 @@ Di Railway dashboard → project kamu → tab **Variables** → tambahkan:
 | `OUTPUT_DELETE_DELAY_MINUTES` | `1440` — hapus output 24 jam setelah job selesai |
 | `AUTO_CELAN_API_KEY` | Buat secret acak panjang untuk proteksi endpoint API |
 | `MAX_BATCH_SIZE` | `10` — batas file per batch Railway |
-| `RUNPOD_MAX_IN_FLIGHT` | `10` — batas request gambar aktif dari Railway ke RunPod |
+| `RUNPOD_MAX_IN_FLIGHT` | `10` — batas request gambar aktif dari Railway ke RunPod (dipakai Discord dan FastAPI) |
+| `MAX_CONCURRENT_FOLDER_JOBS` | `1` — jumlah folder job yang boleh berjalan bersamaan (dipakai Discord dan FastAPI) |
 
 ### Nilai `DRIVE_TOKEN_JSON`
 
@@ -125,9 +126,9 @@ Set these variables on the **RunPod endpoint / worker template**, not on Railway
 ## RunPod stability settings
 
 Versi stabilitas awal membatasi beban secara konservatif:
-- Maksimal satu folder job berjalan pada satu waktu.
-- Maksimal dua request RunPod aktif dari job tersebut.
-- Batch download Railway dibatasi empat file.
+- Maksimal `MAX_CONCURRENT_FOLDER_JOBS` folder job berjalan bersamaan (default 1).
+- Maksimal `RUNPOD_MAX_IN_FLIGHT` request RunPod aktif per proses aplikasi (default 10).
+- Batch download Railway dibatasi `MAX_BATCH_SIZE` file (default 10).
 - Warmup hanya dianggap berhasil jika RunPod mengembalikan status `COMPLETED`.
 - Error worker dan output gambar yang tidak valid dicatat sebagai kegagalan eksplisit.
 
@@ -191,4 +192,4 @@ datacenter, bukan lewat ISP Indonesia.
 
 ### Image-level concurrency
 
-Set `RUNPOD_MAX_IN_FLIGHT=10` dan `MAX_BATCH_SIZE=10` untuk memanfaatkan hingga 10 worker RunPod. Pertahankan satu folder job aktif pada satu waktu. Pastikan concurrency per worker RunPod tetap 1 agar satu GPU tidak menerima beberapa job sekaligus.
+Set `RUNPOD_MAX_IN_FLIGHT=10`, `MAX_BATCH_SIZE=10`, dan `MAX_CONCURRENT_FOLDER_JOBS=1` untuk memanfaatkan hingga 10 worker RunPod. Kedua entry point (Discord dan FastAPI) membaca konfigurasi yang sama. Pastikan concurrency per worker RunPod tetap 1 agar satu GPU tidak menerima beberapa job sekaligus. Nilai default aplikasi: 10 request gambar aktif dan 1 folder job aktif.
