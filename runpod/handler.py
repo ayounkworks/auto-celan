@@ -22,6 +22,8 @@ import torch
 import numpy as np
 from PIL import Image, ImageDraw
 
+from image_limits import fit_dimensions, validate_decode_pixels
+
 # ── Config ────────────────────────────────────────────────
 DEVICE      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 LAMA_DIR    = "/app/models/big-lama"   # folder berisi config.yaml + models/best.ckpt
@@ -36,6 +38,7 @@ SLICE_HEIGHT  = 1500
 SLICE_OVERLAP = 200
 MAX_HEIGHT    = 20000
 MAX_INPUT_PIXELS = int(os.getenv("MAX_INPUT_PIXELS", "25000000"))
+MAX_DECODE_PIXELS = int(os.getenv("MAX_DECODE_PIXELS", "50000000"))
 OUTPUT_JPEG_QUALITY = int(os.getenv("OUTPUT_JPEG_QUALITY", "92"))
 
 # Two-pass blend config. Set LAMA_REFINE=false to benchmark single-pass.
@@ -89,7 +92,11 @@ def strip_prefix(data: str) -> str:
     return data
 
 def decode_rgb(data: str) -> Image.Image:
-    return Image.open(BytesIO(base64.b64decode(strip_prefix(data)))).convert("RGB")
+    raw = base64.b64decode(strip_prefix(data), validate=True)
+    with Image.open(BytesIO(raw)) as source:
+        validate_decode_pixels(*source.size, MAX_DECODE_PIXELS)
+        source.load()
+        return source.convert("RGB")
 
 def encode_jpeg(img: Image.Image, quality: int = OUTPUT_JPEG_QUALITY) -> str:
     buf = BytesIO()
@@ -258,22 +265,21 @@ def handler(job):
 
         image = decode_rgb(inp["image"])
         orig_w, orig_h = image.size
-        pixel_count = orig_w * orig_h
-        print(f"Image: {image.size} pixels={pixel_count:,}")
-        if pixel_count > MAX_INPUT_PIXELS:
-            raise ValueError(
-                f"Input image too large: {orig_w}x{orig_h}={pixel_count:,} pixels; "
-                f"limit is {MAX_INPUT_PIXELS:,}. Increase MAX_INPUT_PIXELS only "
-                "after validating GPU memory and endpoint limits."
-            )
+        original_pixels = orig_w * orig_h
+        print(f"Image: {image.size} pixels={original_pixels:,}")
 
-        # Auto-resize jika terlalu panjang
-        was_resized = False
-        if orig_h > MAX_HEIGHT:
-            scale       = MAX_HEIGHT / orig_h
-            image       = image.resize((int(orig_w * scale), MAX_HEIGHT), Image.LANCZOS)
-            was_resized = True
-            print(f"Resized: {orig_w}x{orig_h} → {image.size}")
+        # Fit the decoded image before YOLO/LaMa. The old guard rejected tall
+        # Webtoon pages before the MAX_HEIGHT resize could run.
+        target_size = fit_dimensions(
+            orig_w, orig_h, max_height=MAX_HEIGHT, max_pixels=MAX_INPUT_PIXELS
+        )
+        was_resized = target_size != (orig_w, orig_h)
+        if was_resized:
+            image = image.resize(target_size, Image.LANCZOS)
+            print(
+                f"Resized for inference: {orig_w}x{orig_h} → "
+                f"{image.size} pixels={image.width * image.height:,}"
+            )
 
         # YOLO detect
         t1    = time.time()
