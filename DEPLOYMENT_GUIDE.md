@@ -186,3 +186,8 @@ git push origin main
 
 Perbedaan utama: traffic Drive ↔ Vision ↔ RunPod jalan di backbone
 datacenter, bukan lewat ISP Indonesia.
+
+
+### Image-level concurrency
+
+Set `RUNPOD_MAX_IN_FLIGHT=10` dan `MAX_BATCH_SIZE=10` untuk memanfaatkan hingga 10 worker RunPod. Pertahankan satu folder job aktif pada satu waktu. Pastikan concurrency per worker RunPod tetap 1 agar satu GPU tidak menerima beberapa job sekaligus.
