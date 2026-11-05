@@ -118,7 +118,7 @@ Set these variables on the **RunPod endpoint / worker template**, not on Railway
 | Variable | Value |
 |---|---|
 | `LAMA_REFINE` | `true` mempertahankan two-pass; set `false` untuk benchmark single-pass |
-| `OUTPUT_JPEG_QUALITY` | `88` — kualitas JPEG hasil RunPod, rentang valid 1–95 |
+| `OUTPUT_JPEG_QUALITY` | `92` — kualitas JPEG hasil RunPod, rentang valid 1–95 |
 | `MAX_INPUT_PIXELS` | `25000000` — batas pengaman jumlah piksel input RunPod |
 
 ## RunPod stability settings
