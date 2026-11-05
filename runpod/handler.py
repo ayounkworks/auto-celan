@@ -23,6 +23,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from image_limits import fit_dimensions, validate_decode_pixels
+from result_storage import ensure_base64_fallback_allowed, upload_result_bytes
 
 # ── Config ────────────────────────────────────────────────
 DEVICE      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -40,6 +41,7 @@ MAX_HEIGHT    = 20000
 MAX_INPUT_PIXELS = int(os.getenv("MAX_INPUT_PIXELS", "25000000"))
 MAX_DECODE_PIXELS = int(os.getenv("MAX_DECODE_PIXELS", "50000000"))
 OUTPUT_JPEG_QUALITY = int(os.getenv("OUTPUT_JPEG_QUALITY", "92"))
+MAX_BASE64_OUTPUT_BYTES = int(os.getenv("MAX_BASE64_OUTPUT_BYTES", "4194304"))
 
 # Two-pass blend config. Set LAMA_REFINE=false to benchmark single-pass.
 REFINE        = os.getenv("LAMA_REFINE", "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -98,11 +100,28 @@ def decode_rgb(data: str) -> Image.Image:
         source.load()
         return source.convert("RGB")
 
-def encode_jpeg(img: Image.Image, quality: int = OUTPUT_JPEG_QUALITY) -> str:
+def encode_jpeg(
+    img: Image.Image,
+    quality: int = OUTPUT_JPEG_QUALITY,
+    job_id: str = None,
+) -> str:
     buf = BytesIO()
     img.save(buf, format="JPEG", quality=quality, optimize=True)
-    encoded = base64.b64encode(buf.getvalue()).decode("ascii")
-    print(f"[output] JPEG bytes={buf.tell()} base64_chars={len(encoded)} quality={quality}")
+    jpeg_bytes = buf.getvalue()
+    stored = upload_result_bytes(jpeg_bytes, job_id=job_id)
+    if stored:
+        print(
+            f"[output] Stored object key={stored['key']} bytes={stored['bytes']} "
+            f"url_ttl={os.getenv('RESULT_URL_TTL_SECONDS', '3600')}s"
+        )
+        return stored["url"]
+
+    ensure_base64_fallback_allowed(len(jpeg_bytes), MAX_BASE64_OUTPUT_BYTES)
+    encoded = base64.b64encode(jpeg_bytes).decode("ascii")
+    print(
+        f"[output] JPEG bytes={len(jpeg_bytes)} base64_chars={len(encoded)} "
+        f"quality={quality} transport=base64"
+    )
     return "data:image/jpeg;base64," + encoded
 
 
@@ -290,7 +309,7 @@ def handler(job):
             print("No text detected.")
             if was_resized:
                 image = image.resize((orig_w, orig_h), Image.LANCZOS)
-            return {"image": encode_jpeg(image), "boxes": 0}
+            return {"image": encode_jpeg(image, job_id=inp.get("job_id")), "boxes": 0}
 
         # Build mask
         mask = build_mask(image, boxes)
@@ -307,7 +326,7 @@ def handler(job):
         elapsed = time.time() - start
         print(f"Total: {elapsed:.2f}s")
 
-        return {"image": encode_jpeg(result), "boxes": len(boxes)}
+        return {"image": encode_jpeg(result, job_id=inp.get("job_id")), "boxes": len(boxes)}
 
     except Exception as e:
         print("Handler error:", repr(e))
