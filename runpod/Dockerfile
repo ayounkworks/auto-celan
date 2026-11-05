@@ -21,6 +21,7 @@ COPY best.pt /app/models/best.pt
 
 # Handler
 COPY handler.py .
+COPY image_limits.py .
 
 ENV PYTHONUNBUFFERED=1
 
