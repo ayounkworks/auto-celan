@@ -121,7 +121,8 @@ Set these variables on the **RunPod endpoint / worker template**, not on Railway
 |---|---|
 | `LAMA_REFINE` | `true` mempertahankan two-pass; set `false` untuk benchmark single-pass |
 | `OUTPUT_JPEG_QUALITY` | `92` — kualitas JPEG hasil RunPod, rentang valid 1–95 |
-| `MAX_INPUT_PIXELS` | `25000000` — batas pengaman jumlah piksel input RunPod |
+| `MAX_INPUT_PIXELS` | `25000000` — batas piksel setelah resize untuk YOLO/LaMa |
+| `MAX_DECODE_PIXELS` | `50000000` — batas piksel sumber sebelum decode penuh, untuk melindungi RAM worker |
 
 ## RunPod stability settings
 
@@ -137,7 +138,7 @@ Untuk membandingkan kualitas dan kecepatan LaMa:
 2. Jalankan batch gambar yang sama dengan `LAMA_REFINE=false` (single-pass).
 3. Bandingkan waktu per gambar dan kualitas pada bubble putih, bubble gelap, tekstur, serta artwork di belakang teks.
 
-Jangan menaikkan `MAX_INPUT_PIXELS` atau concurrency sebelum memeriksa VRAM dan hasil uji. Pengiriman hasil masih menggunakan Base64; log worker sekarang mencatat ukuran JPEG untuk membantu mengidentifikasi apakah HTTP 400 berkaitan dengan ukuran payload.
+Input Webtoon yang melewati batas inferensi akan diperkecil secara proporsional sebelum YOLO/LaMa. Sumber di atas `MAX_DECODE_PIXELS` tetap ditolak sebelum decode penuh untuk melindungi RAM worker. Hasil yang di-resize tetap dikembalikan ke dimensi sumber sesuai perilaku handler sebelumnya. Jangan menaikkan `MAX_INPUT_PIXELS`, `MAX_DECODE_PIXELS`, atau concurrency sebelum memeriksa VRAM dan RAM worker. Pengiriman hasil masih menggunakan Base64; log worker sekarang mencatat ukuran JPEG untuk membantu mengidentifikasi apakah HTTP 400 berkaitan dengan ukuran payload.
 
 ## Cara lihat log real-time di Railway
 
