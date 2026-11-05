@@ -140,6 +140,10 @@ Untuk membandingkan kualitas dan kecepatan LaMa:
 
 Input Webtoon yang melewati batas inferensi akan diperkecil secara proporsional sebelum YOLO/LaMa. Sumber di atas `MAX_DECODE_PIXELS` tetap ditolak sebelum decode penuh untuk melindungi RAM worker. Hasil yang di-resize tetap dikembalikan ke dimensi sumber sesuai perilaku handler sebelumnya. Jangan menaikkan `MAX_INPUT_PIXELS`, `MAX_DECODE_PIXELS`, atau concurrency sebelum memeriksa VRAM dan RAM worker. Pengiriman hasil masih menggunakan Base64; log worker sekarang mencatat ukuran JPEG untuk membantu mengidentifikasi apakah HTTP 400 berkaitan dengan ukuran payload.
 
+## Google Drive folder listing
+
+Folder listing pada pipeline dan endpoint `/scan` menggunakan pagination Google Drive (`nextPageToken`) sampai seluruh halaman terbaca. Jadi folder dengan lebih dari 1.000 item tidak berhenti di halaman pertama.
+
 ## Cara lihat log real-time di Railway
 
 Railway dashboard → project → **Deployments** → klik deploy aktif → **View Logs**
