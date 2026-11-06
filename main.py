@@ -1,22 +1,19 @@
-# ============================================================
-# main.py  ← Entry point utama
-# YOLO edition — Vision API dihapus
-#
-# Cara run:
-#   python main.py local
-#   python main.py
-# ============================================================
+# Auto Celan entry point.
+# CLI examples:
+#   python main.py "D:\\Webtoon\\Chapter 01"
+#   python main.py "D:\\Webtoon\\Chapter 01" --workers 3
+#   python main.py "D:\\Webtoon\\Chapter 01" --output "D:\\Output\\Chapter 01"
+# Server/API mode remains available with: python main.py
 
 import sys
-import os
 
-# ── Mode Lokal ────────────────────────────────────────────
-if len(sys.argv) > 1 and sys.argv[1] == "local":
-    from local_runner import main
-    main()
-    sys.exit(0)
+if len(sys.argv) > 1:
+    from local_runner import main as local_main
+    cli_args = sys.argv[1:]
+    if cli_args[0].casefold() == "local":
+        cli_args = cli_args[1:]
+    raise SystemExit(local_main(cli_args))
 
-# ── Mode Server ───────────────────────────────────────────
 import asyncio
 import gc
 import io
@@ -24,6 +21,7 @@ import json
 import uuid
 import socket
 import hmac
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -47,34 +45,25 @@ from core.pipeline import jobs, job_queue, cancelled_jobs, run_pipeline, deletio
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-
-    # Keep API mode aligned with Discord: one folder job at a time, with
-    # image-level concurrency controlled independently by RUNPOD_MAX_IN_FLIGHT.
-    runpod_module.runpod_sem     = asyncio.Semaphore(RUNPOD_MAX_IN_FLIGHT)
+    runpod_module.runpod_sem = asyncio.Semaphore(RUNPOD_MAX_IN_FLIGHT)
     pipeline_module._warmup_lock = asyncio.Lock()
     pipeline_module.pipeline_sem = asyncio.Semaphore(MAX_CONCURRENT_FOLDER_JOBS)
     pipeline_module.download_sem = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
-
-    timeout   = aiohttp.ClientTimeout(total=300, connect=20, sock_connect=20, sock_read=300)
+    timeout = aiohttp.ClientTimeout(total=300, connect=20, sock_connect=20, sock_read=300)
     connector = aiohttp.TCPConnector(limit=30, ttl_dns_cache=300, family=socket.AF_INET)
     pipeline_module._http_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
-
     del_task = asyncio.create_task(deletion_loop())
     asyncio.create_task(warmup())
-
     yield
-
     await pipeline_module._http_session.close()
     del_task.cancel()
 
 
-app = FastAPI(title="Manga Text Removal API", lifespan=lifespan)
-
+app = FastAPI(title="Manga Text Removal API")
 API_ACCESS_KEY = os.getenv("AUTO_CELAN_API_KEY")
 
 
 def require_api_key(authorization: str | None = Header(default=None)):
-    """Require a Bearer API key for endpoints that can read or modify Drive/jobs."""
     if not API_ACCESS_KEY:
         raise HTTPException(
             status_code=503,
@@ -83,8 +72,7 @@ def require_api_key(authorization: str | None = Header(default=None)):
     scheme, _, token = (authorization or "").partition(" ")
     if scheme.lower() != "bearer" or not hmac.compare_digest(token, API_ACCESS_KEY):
         raise HTTPException(
-            status_code=401,
-            detail="Missing or invalid API key.",
+            status_code=401, detail="Missing or invalid API key.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -106,16 +94,12 @@ def health():
 async def scan_folder_endpoint(req: ScanRequest):
     try:
         folder_id = extract_folder_id(req.folder_url)
-
         all_files = await asyncio.to_thread(list_folder_files, folder_id)
         valid, skipped = filter_and_sort_files(all_files)
-        return {
-            "file_count":   len(valid),
-            "skipped_count": len(skipped),
-            "filenames":    [f["name"] for f in valid],
-        }
-    except Exception as e:
-        raise HTTPException(400, str(e))
+        return {"file_count": len(valid), "skipped_count": len(skipped),
+                "filenames": [f["name"] for f in valid]}
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.post("/upload_images", dependencies=[Depends(require_api_key)])
@@ -125,36 +109,26 @@ async def api_upload_images_form(
 ):
     if not files:
         raise HTTPException(400, "Tidak ada file")
-
-    ts          = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     folder_name = label or f"Upload_{ts}"
-    meta = {
-        "name": folder_name,
-        "mimeType": "application/vnd.google-apps.folder",
-    }
+    meta = {"name": folder_name, "mimeType": "application/vnd.google-apps.folder"}
     if DRIVE_OUTPUT_FOLDER_ID:
         meta["parents"] = [DRIVE_OUTPUT_FOLDER_ID]
-    folder    = await asyncio.to_thread(
+    folder = await asyncio.to_thread(
         lambda: _get_drive().files().create(body=meta, fields="id").execute()
     )
     folder_id = folder.get("id")
-    uploaded  = []
-
-    for f in files:
-        data    = await f.read()
-        buf     = io.BytesIO(data)
-        ext     = os.path.splitext(f.filename.lower())[1]
-        mime    = ("image/png" if ext == ".png"
-                   else "image/webp" if ext == ".webp" else "image/jpeg")
-        await asyncio.to_thread(upload_file, buf, f.filename, folder_id, mime)
-        uploaded.append(f.filename)
-
-    return {
-        "folder_url": f"https://drive.google.com/drive/folders/{folder_id}",
-        "folder_id":  folder_id,
-        "uploaded":   len(uploaded),
-        "filenames":  uploaded,
-    }
+    uploaded = []
+    for file in files:
+        data = await file.read()
+        buf = io.BytesIO(data)
+        ext = os.path.splitext(file.filename.lower())[1]
+        mime = ("image/png" if ext == ".png"
+                else "image/webp" if ext == ".webp" else "image/jpeg")
+        await asyncio.to_thread(upload_file, buf, file.filename, folder_id, mime)
+        uploaded.append(file.filename)
+    return {"folder_url": f"https://drive.google.com/drive/folders/{folder_id}",
+            "folder_id": folder_id, "uploaded": len(uploaded), "filenames": uploaded}
 
 
 @app.post("/clean", dependencies=[Depends(require_api_key)])
@@ -162,11 +136,10 @@ async def api_clean(req: CleanRequest, bg: BackgroundTasks):
     job_id = str(uuid.uuid4())[:8]
     db_create_job(job_id, "", req.folder_url, 0)
     jobs[job_id] = {
-        "status": "queued", "progress": "Starting...",
-        "result_folder": None, "output_folder_id": None,
-        "queue_position": len(job_queue) + 1,
-        "total_files": 0, "completed_files": 0,
-        "failed_files": [], "eta": "menghitung...", "log": [],
+        "status": "queued", "progress": "Starting...", "result_folder": None,
+        "output_folder_id": None, "queue_position": len(job_queue) + 1,
+        "total_files": 0, "completed_files": 0, "failed_files": [],
+        "eta": "menghitung...", "log": [],
     }
     bg.add_task(run_pipeline, job_id, req.folder_url)
     return {"job_id": job_id, "message": "Pipeline started"}
