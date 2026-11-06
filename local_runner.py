@@ -11,10 +11,31 @@ import aiohttp
 from PIL import Image
 
 from core.config import MAX_WIDTH
+from core.local_paths import default_output_dir, discover_images
 import core.runpod_client as runpod_module
 from core.runpod_client import run_runpod_lama
 
-VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+DEFAULT_WORKERS = 3
+TIMEOUT_SECONDS = 180
+
+
+""Local CLI runner for processing a folder of Webtoon images through RunPod."""
+import argparse
+import asyncio
+import os
+import socket
+import sys
+import traceback
+from pathlib import Path
+
+import aiohttp
+from PIL import Image
+
+from core.config import MAX_WIDTH
+from core.local_paths import default_output_dir, discover_images
+import core.runpod_client as runpod_module
+from core.runpod_client import run_runpod_lama
+
 DEFAULT_WORKERS = 3
 TIMEOUT_SECONDS = 180
 
