@@ -1,4 +1,4 @@
-from local_runner import default_output_dir, discover_images
+from core.local_paths import default_output_dir, discover_images
 
 
 def test_default_output_is_sibling_named_cleaned(tmp_path):
