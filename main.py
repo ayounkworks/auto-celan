@@ -59,7 +59,7 @@ async def lifespan(app: FastAPI):
     del_task.cancel()
 
 
-app = FastAPI(title="Manga Text Removal API")
+app = FastAPI(title="Manga Text Removal API", lifespan=lifespan)
 API_ACCESS_KEY = os.getenv("AUTO_CELAN_API_KEY")
 
 
