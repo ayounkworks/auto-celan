@@ -6,8 +6,8 @@ VALID_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 def default_output_dir(input_dir: Path) -> Path:
-    """Place the cleaned folder beside the source folder."""
-    return input_dir.with_name(f"{input_dir.name}_cleaned")
+    """Place cleaned images in an output_cleaned subfolder of the source folder."""
+    return input_dir / "output_cleaned"
 
 
 def discover_images(input_dir: Path) -> list[Path]:
