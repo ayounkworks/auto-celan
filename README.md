@@ -68,6 +68,7 @@ Supported extensions: JPG, JPEG, PNG, WEBP. Files are processed in natural filen
 
 - Source images remain untouched.
 - Output is written locally and the output folder is created automatically.
+- Running the same chapter again overwrites output files with matching names inside `output_cleaned`; copy any manually edited results elsewhere first.
 - The CLI does not require Google Drive credentials.
 - `--workers` controls the number of in-flight RunPod jobs. Start with 1–2; increase only after checking endpoint capacity and costs.
 - RunPod usage is billed separately by your RunPod plan/endpoint configuration.
