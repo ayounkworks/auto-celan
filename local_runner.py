@@ -1,4 +1,4 @@
-"""Standalone CLI: local files in/out, RunPod used only for GPU inference."""
+""""Standalone CLI: local files in/out, RunPod used only for GPU inference."""
 import argparse
 import asyncio
 import socket
@@ -82,8 +82,6 @@ async def run_local(input_dir: Path, output_dir: Path, workers: int = DEFAULT_WO
         raise ValueError(f"Folder input tidak ditemukan: {input_dir}")
     if input_dir == output_dir:
         raise ValueError("Folder output tidak boleh sama dengan folder input.")
-    if input_dir in output_dir.parents:
-        raise ValueError("Folder output tidak boleh berada di dalam folder input.")
     if output_dir in input_dir.parents:
         raise ValueError("Folder output tidak boleh menjadi parent folder input.")
     if workers < 1:
@@ -98,7 +96,7 @@ async def run_local(input_dir: Path, output_dir: Path, workers: int = DEFAULT_WO
     print(f"Output  : {output_dir}")
     print(f"Images  : {len(files)}")
     print(f"Workers : {workers}")
-    print("Backend : RunPod Serverless (YOLO + LaMa)\n")
+    print("Backend : RunPod Serverless (YOLO + LaMa)\\n")
 
     runpod_module.runpod_sem = asyncio.Semaphore(workers)
     timeout = aiohttp.ClientTimeout(total=360, connect=30, sock_read=300)
@@ -114,7 +112,7 @@ async def run_local(input_dir: Path, output_dir: Path, workers: int = DEFAULT_WO
 
     succeeded = sum(ok for _, ok in results)
     failed = len(results) - succeeded
-    print(f"\n=== SELESAI: {succeeded} berhasil, {failed} gagal ===")
+    print(f"\\n=== SELESAI: {succeeded} berhasil, {failed} gagal ===")
     print(f"Output: {output_dir}")
     return succeeded, failed
 
@@ -127,7 +125,7 @@ def build_parser():
     parser.add_argument("input", nargs="?", default="input",
                         help="Folder gambar sumber (default: ./input).")
     parser.add_argument("--output", "-o",
-                        help="Folder hasil. Default: folder saudara dengan akhiran _cleaned.")
+                        help="Folder hasil. Default: subfolder output_cleaned di dalam folder input.")
     parser.add_argument("--workers", "-w", type=int, default=DEFAULT_WORKERS,
                         help=f"Jumlah gambar paralel (default: {DEFAULT_WORKERS}).")
     return parser
