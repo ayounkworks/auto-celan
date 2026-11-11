@@ -1,5 +1,4 @@
 # Local CLI + RunPod client (no Railway, Discord, FastAPI, or Google Drive)
 Pillow>=10.4.0
-numpy>=1.26.0
 aiohttp==3.9.5
 python-dotenv==1.0.1
