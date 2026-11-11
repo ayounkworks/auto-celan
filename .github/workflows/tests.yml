@@ -19,7 +19,7 @@ jobs:
           python-version: "3.11"
       - name: Install CLI dependencies and test runner
         run: python -m pip install -r requirements.txt pytest
-      - name: Compile Python files
+      - name: Compile CLI runtime
         run: python -m compileall -q main.py local_runner.py core
       - name: Run CLI tests
         run: python -m pytest -q test/test_local_cli.py test/test_cli_parser.py test/test_runpod_payload.py

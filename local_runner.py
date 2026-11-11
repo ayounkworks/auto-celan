@@ -84,6 +84,8 @@ async def run_local(input_dir: Path, output_dir: Path, workers: int = DEFAULT_WO
         raise ValueError("Folder output tidak boleh sama dengan folder input.")
     if input_dir in output_dir.parents:
         raise ValueError("Folder output tidak boleh berada di dalam folder input.")
+    if output_dir in input_dir.parents:
+        raise ValueError("Folder output tidak boleh menjadi parent folder input.")
     if workers < 1:
         raise ValueError("--workers harus minimal 1.")
 
