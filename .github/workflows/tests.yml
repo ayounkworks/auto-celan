@@ -4,10 +4,7 @@ on:
   push:
     branches:
       - main
-      - "fix/**"
-  pull_request:
-    branches:
-      - main
+      - "feature/**"
 
 jobs:
   syntax-and-database-tests:
