@@ -7,7 +7,7 @@ import traceback
 from pathlib import Path
 
 import aiohttp
-from PIL import Image, UnidentifiedImageError
+from PIL import Image
 
 from core.config import MAX_WIDTH, RUNPOD_API_KEY, RUNPOD_ENDPOINT_ID
 from core.local_paths import default_output_dir, discover_images
@@ -24,9 +24,9 @@ def _save_image(image: Image.Image, destination: Path) -> None:
     if suffix in {".jpg", ".jpeg"}:
         image.convert("RGB").save(destination, format="JPEG", quality=95, optimize=True)
     elif suffix == ".webp":
-        image.convert("RGB").save(destination, format="WEBP", quality=95, method=4)
+        image.save(destination, format="WEBP", quality=95, method=4)
     elif suffix == ".png":
-        image.convert("RGB").save(destination, format="PNG", optimize=True)
+        image.save(destination, format="PNG", optimize=True)
     else:
         raise ValueError(f"Unsupported output extension: {suffix}")
 
@@ -38,6 +38,10 @@ async def process_one(source_path: Path, output_dir: Path, semaphore, http_sessi
             with Image.open(source_path) as source:
                 source.load()
                 original_size = source.size
+                has_alpha = "A" in source.getbands() or "transparency" in source.info
+                original_alpha = (
+                    source.convert("RGBA").getchannel("A") if has_alpha else None
+                )
                 image = source.convert("RGB")
 
             if image.width > MAX_WIDTH:
@@ -61,6 +65,9 @@ async def process_one(source_path: Path, output_dir: Path, semaphore, http_sessi
                 result = result.resize(original_size, Image.Resampling.LANCZOS)
 
             destination = output_dir / source_path.name
+            if original_alpha is not None and destination.suffix.casefold() in {".png", ".webp"}:
+                result = result.convert("RGBA")
+                result.putalpha(original_alpha)
             await asyncio.to_thread(_save_image, result, destination)
             print(f"[OK] {source_path.name} -> {destination}", flush=True)
             return source_path.name, True
