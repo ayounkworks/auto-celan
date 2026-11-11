@@ -1,4 +1,4 @@
-""""Standalone CLI: local files in/out, RunPod used only for GPU inference."""
+"""Standalone CLI: local files in/out, RunPod used only for GPU inference."""
 import argparse
 import asyncio
 import socket
@@ -96,7 +96,7 @@ async def run_local(input_dir: Path, output_dir: Path, workers: int = DEFAULT_WO
     print(f"Output  : {output_dir}")
     print(f"Images  : {len(files)}")
     print(f"Workers : {workers}")
-    print("Backend : RunPod Serverless (YOLO + LaMa)\\n")
+    print("Backend : RunPod Serverless (YOLO + LaMa)\n")
 
     runpod_module.runpod_sem = asyncio.Semaphore(workers)
     timeout = aiohttp.ClientTimeout(total=360, connect=30, sock_read=300)
@@ -112,7 +112,7 @@ async def run_local(input_dir: Path, output_dir: Path, workers: int = DEFAULT_WO
 
     succeeded = sum(ok for _, ok in results)
     failed = len(results) - succeeded
-    print(f"\\n=== SELESAI: {succeeded} berhasil, {failed} gagal ===")
+    print(f"\n=== SELESAI: {succeeded} berhasil, {failed} gagal ===")
     print(f"Output: {output_dir}")
     return succeeded, failed
 
