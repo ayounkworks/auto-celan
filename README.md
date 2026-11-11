@@ -1,136 +1,91 @@
-# auto_celan_v2 — Manga Text Removal
+# Auto Celan — Local CLI
 
-## Struktur Folder
+Auto Celan processes Webtoon page images from a local folder and writes cleaned images to a local output folder. There is no Railway service, Discord bot, FastAPI server, or Google Drive dependency in this CLI version.
 
-```
-auto_celan_v2/
-│
-├── main.py                  ← Entry point (server FastAPI + mode lokal)
-├── local_runner.py          ← Logic mode lokal (python main.py local)
-├── requirements.txt
-├── .env                     ← API keys (JANGAN di-commit ke git)
-├── token_drive.json         ← OAuth token Google Drive
-├── manga_bot.db             ← SQLite database
-│
-├── core/                    ← Modul inti (mudah debug per-file)
-│   ├── config.py            ← Semua konstanta & env vars
-│   ├── database.py          ← SQLite helpers
-│   ├── drive.py             ← Google Drive download/upload
-│   ├── image_processing.py  ← smart_clean, SFX filter, crop, validate
-│   ├── pipeline.py          ← Orchestrasi Vision → RunPod → Upload
-│   └── runpod_client.py     ← HTTP ke RunPod Serverless API
-│
-├── runpod/                  ← Docker image untuk RunPod endpoint
-│   ├── Dockerfile
-│   ├── handler.py
-│   ├── download_model.py
-│   └── requirements.txt
-│
-├── input/                   ← Taruh gambar di sini untuk mode lokal
-├── output/                  ← Hasil pembersihan mode lokal
-└── test/                    ← Script testing
-    └── test_inpaint.py
-```
+**GPU processing still runs on RunPod Serverless.** The CLI and file management run on your PC; each image is sent to the configured RunPod endpoint for YOLO detection and LaMa inpainting. This keeps the laptop from needing a capable NVIDIA GPU.
 
----
+## Requirements
 
-## Bug yang Diperbaiki
+- Python 3.10+
+- A RunPod Serverless endpoint containing the compatible YOLO + LaMa handler
+- RunPod API key and endpoint ID
 
-### [BUG-1] `RUNPOD_API_KEY` tidak pernah di-load dari `.env`
-**File:** `core/config.py`
-**Masalah:** Di `main.py` lama, variabel `RUNPOD_API_KEY` tidak ada di blok `os.getenv(...)`.
-Akibatnya `run_runpod_lama()` selalu kirim Authorization header kosong → HTTP 401 dari RunPod.
-**Fix:** Ditambahkan `RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")` di `core/config.py`.
+## Setup (Windows PowerShell)
 
-### [BUG-2] `BytesIO` NameError di `run_runpod_lama()`
-**File:** `core/runpod_client.py`
-**Masalah:** Fungsi `run_runpod_lama()` pakai `BytesIO(...)` tapi yang di-import cuma `import io`.
-Maka `BytesIO` adalah `NameError` saat runtime — RunPod tidak pernah bisa dipanggil.
-**Fix:** `from io import BytesIO` ditambahkan eksplisit di `runpod_client.py`.
-
-### [BUG-3] Double pemanggilan `create_output_folder` di pipeline
-**File:** `core/pipeline.py`
-**Masalah:** Copy-paste error → output folder dibuat dua kali, folder pertama tidak terpakai (leaked di Drive).
-**Fix:** Satu call saja, import `DRIVE_OUTPUT_FOLDER_ID` di tempat yang tepat.
-
-### [BUG-4] `_http_session` tidak pernah dibuat di mode lokal
-**File:** `local_runner.py`
-**Masalah:** Mode lokal langsung call `run_runpod_lama()` tanpa `_http_session`, padahal fungsi lama
-mengharapkan session global dari lifespan. Kalau session None → crash atau buat session baru tiap file.
-**Fix:** `local_runner.py` buat satu `aiohttp.ClientSession` dan inject ke semua task dalam satu `asyncio.run()`.
-
-### [BUG-5] `asyncio.run(_http_session.close())` dipanggil setelah `asyncio.run()` sudah tutup
-**File:** `main.py` lama (blok `__main__`)
-**Masalah:** Setelah `asyncio.run(run_local_batch())` selesai, event loop sudah tutup.
-Memanggil `asyncio.run(_http_session.close())` lagi → `RuntimeError: This event loop is already running`.
-**Fix:** Di `local_runner.py` session dipakai dengan `async with` → otomatis tutup saat selesai.
-
-### [BUG-6] `vision_client` tidak di-pass ke mode lokal dengan benar
-**File:** `local_runner.py`
-**Masalah:** Mode lokal lama mencoba buat `vision.ImageAnnotatorClient()` baru tanpa API key,
-sehingga muncul `DefaultCredentialsError`.
-**Fix:** `local_runner.py` inisialisasi `vision_client` sendiri dengan `client_options={"api_key": GOOGLE_API_KEY}`.
-
----
-
-## Cara Run
-
-### Mode Lokal (PowerShell / Terminal)
 ```powershell
-# 1. Taruh gambar ke folder input/
-# 2. Jalankan:
-python main.py local
-# 3. Hasil ada di folder output/
+git clone https://github.com/ayounkworks/auto-celan.git
+cd auto-celan
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-### Mode Server (Railway / Docker)
-```bash
-python main.py
-# atau:
-uvicorn main:app --host 0.0.0.0 --port 8080
-```
-
----
-
-## Apakah perlu push Docker lagi?
-
-**Tidak perlu**, selama kamu hanya mengubah kode di sisi klien (main.py dan modul-modulnya).
-
-Docker image di RunPod **hanya berisi**:
-- `handler.py` — menerima request dari RunPod
-- Model LaMa (`big-lama.pt`) — sudah di-bake saat `docker build`
-- Dependencies Python untuk inference
-
-Kamu perlu **rebuild & push Docker** hanya kalau:
-| Perubahan | Perlu push Docker? |
-|-----------|-------------------|
-| Edit `main.py`, `core/*.py`, `local_runner.py` | ❌ Tidak |
-| Edit `runpod/handler.py` | ✅ Ya |
-| Ganti model LaMa | ✅ Ya |
-| Tambah/ubah library di `runpod/requirements.txt` | ✅ Ya |
-
-### Cara Push Update ke RunPod (Versioning)
-1. **Build:** 
-   `docker build -t ayounkwork/lama-handler:v7 ./runpod`
-2. **Push:** 
-   `docker push ayounkwork/lama-handler:v7`
-3. **Deploy:** 
-   - Buka RunPod Console
-   - Pilih Endpoint -> Settings
-   - Ubah `Container Image` ke tag baru (misal `:v7`)
-   - Save & Update.
-
----
-
-## Environment Variables (.env)
+Edit `.env`:
 
 ```env
-GOOGLE_VISION_API_KEY=...       # Kompatibilitas lama
-DRIVE_OUTPUT_FOLDER_ID=...      # Boleh kosong untuk root Drive
-RUNPOD_API_KEY=...              # Wajib
-RUNPOD_ENDPOINT_ID=...          # Opsional, ada default di config.py
-OUTPUT_DELETE_DELAY_MINUTES=1440 # Default: hapus output 24 jam setelah job selesai
-AUTO_CELAN_API_KEY=...          # Wajib untuk endpoint API; kirim sebagai Bearer token
+RUNPOD_API_KEY=your_runpod_api_key
+RUNPOD_ENDPOINT_ID=your_endpoint_id
 ```
 
-Output Drive dijadwalkan untuk dihapus **24 jam setelah job selesai** secara default. Nilai dapat diubah lewat `OUTPUT_DELETE_DELAY_MINUTES`. Endpoint API selain `/health` memerlukan header `Authorization: Bearer <AUTO_CELAN_API_KEY>`; jika key belum disetel, endpoint terlindungi dinonaktifkan.
+Keep `.env` private. Never commit API keys.
+
+## Run
+
+Pass the folder path directly:
+
+```powershell
+python main.py "D:\Webtoon\Chapter 01"
+```
+
+Default output is a sibling folder named `Chapter 01_cleaned`.
+
+Optional output path and concurrency:
+
+```powershell
+python main.py "D:\Webtoon\Chapter 01" --output "D:\Webtoon\Chapter 01_result" --workers 2
+```
+
+Or use the default `input` folder:
+
+```powershell
+python main.py
+```
+
+Supported extensions: JPG, JPEG, PNG, WEBP. Files are processed in natural filename order (page1, page2, page10). Nested subdirectories are not scanned. Failed images are reported and do not prevent the remaining files from running.
+
+## Important behavior
+
+- Source images remain untouched.
+- Output is written locally and the output folder is created automatically.
+- The CLI does not require Google Drive credentials.
+- `--workers` controls the number of in-flight RunPod jobs. Start with 1–2; increase only after checking endpoint capacity and costs.
+- RunPod usage is billed separately by your RunPod plan/endpoint configuration.
+- The local machine still needs a stable internet connection to send images and download processed results.
+
+## Troubleshooting
+
+- `RUNPOD_API_KEY belum diatur`: add the key to `.env` in the project root.
+- HTTP 401: verify the RunPod API key.
+- HTTP 404: verify `RUNPOD_ENDPOINT_ID`.
+- Worker/GPU unavailable: check the RunPod endpoint status and worker logs.
+- A file reported as failed is not silently replaced with the uncleaned original; inspect the error and retry it.
+
+## Run tests
+
+```powershell
+python -m pip install pytest
+python -m compileall -q .
+python -m pytest -q
+```
+
+## Project components
+
+- `main.py`: CLI entry point.
+- `local_runner.py`: local file orchestration, bounded concurrency, output encoding.
+- `core/local_paths.py`: image discovery and default output path.
+- `core/runpod_client.py`: RunPod Serverless HTTP client.
+- `runpod/`: worker implementation and model image used by the RunPod endpoint.
+
+Legacy Railway/Discord/Google Drive modules are retained for reference but are not imported or required by the CLI runtime.
