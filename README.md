@@ -39,7 +39,7 @@ Pass the folder path directly:
 python main.py "D:\\Webtoon\\Chapter 01"
 ```
 
-By default, the CLI creates an `output_cleaned` subfolder **inside the input folder**. Source images stay in the input folder, and cleaned images are written to that subfolder:
+By default, the CLI creates an `output_cleaned` subfolder **inside the input folder**. Source images stay in the input folder, and cleaned images are written to that subfolder. PNG and WebP transparency is preserved by restoring the original alpha channel after remote inference:
 
 ```text
 Chapter 01/
