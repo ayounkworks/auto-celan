@@ -13,10 +13,10 @@ Auto Celan processes Webtoon page images from a local folder and writes cleaned 
 ## Setup (Windows PowerShell)
 
 ```powershell
-git clone https://github.com/ayounkworks/auto-celan.git
+git clone -b feature/standalone-cli https://github.com/ayounkworks/auto-celan.git
 cd auto-celan
 py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
+.\\.venv\\Scripts\\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 Copy-Item .env.example .env
@@ -36,15 +36,24 @@ Keep `.env` private. Never commit API keys.
 Pass the folder path directly:
 
 ```powershell
-python main.py "D:\Webtoon\Chapter 01"
+python main.py "D:\\Webtoon\\Chapter 01"
 ```
 
-Default output is a sibling folder named `Chapter 01_cleaned`.
+By default, the CLI creates an `output_cleaned` subfolder **inside the input folder**. Source images stay in the input folder, and cleaned images are written to that subfolder:
 
-Optional output path and concurrency:
+```text
+Chapter 01/
+├── 001.webp
+├── 002.webp
+└── output_cleaned/
+    ├── 001.webp
+    └── 002.webp
+```
+
+Optional custom output path and concurrency:
 
 ```powershell
-python main.py "D:\Webtoon\Chapter 01" --output "D:\Webtoon\Chapter 01_result" --workers 2
+python main.py "D:\\Webtoon\\Chapter 01" --output "D:\\Hasil\\Chapter 01" --workers 2
 ```
 
 Or use the default `input` folder:
@@ -53,7 +62,7 @@ Or use the default `input` folder:
 python main.py
 ```
 
-Supported extensions: JPG, JPEG, PNG, WEBP. Files are processed in natural filename order (page1, page2, page10). Nested subdirectories are not scanned. Failed images are reported and do not prevent the remaining files from running.
+Supported extensions: JPG, JPEG, PNG, WEBP. Files are processed in natural filename order (page1, page2, page10). Nested subdirectories are not scanned. The `output_cleaned` folder is not scanned because discovery is non-recursive. Failed images are reported and do not prevent the remaining files from running.
 
 ## Important behavior
 
@@ -86,6 +95,5 @@ python -m pytest -q
 - `local_runner.py`: local file orchestration, bounded concurrency, output encoding.
 - `core/local_paths.py`: image discovery and default output path.
 - `core/runpod_client.py`: RunPod Serverless HTTP client.
-- `runpod/`: worker implementation and model image used by the RunPod endpoint.
 
 Legacy Railway/Discord/Google Drive source modules and deployment files are not part of this CLI branch.
