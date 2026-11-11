@@ -88,4 +88,4 @@ python -m pytest -q
 - `core/runpod_client.py`: RunPod Serverless HTTP client.
 - `runpod/`: worker implementation and model image used by the RunPod endpoint.
 
-Legacy Railway/Discord/Google Drive modules are retained for reference but are not imported or required by the CLI runtime.
+Legacy Railway/Discord/Google Drive source modules and deployment files are not part of this CLI branch.
