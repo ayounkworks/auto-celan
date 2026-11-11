@@ -4,6 +4,8 @@ Auto Celan processes Webtoon page images from a local folder and writes cleaned 
 
 **GPU processing still runs on RunPod Serverless.** The CLI and file management run on your PC; each image is sent to the configured RunPod endpoint for YOLO detection and LaMa inpainting. This keeps the laptop from needing a capable NVIDIA GPU.
 
+**Deployment note:** This CLI branch does not include the RunPod worker source or model weights. It requires the compatible RunPod endpoint that is already deployed. Do not use this branch to rebuild or redeploy that worker; retain the worker source from the deployment branch/repository.
+
 ## Requirements
 
 - Python 3.10+
