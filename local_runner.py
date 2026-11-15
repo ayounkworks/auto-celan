@@ -133,11 +133,31 @@ async def run_local(input_dir: Path, output_root: Path, workers: int):
 
 
 def main(argv=None):
-    args = parse_args(argv)
+    # No CLI arguments: use an interactive prompt for a simpler workflow.
+    interactive = argv is None and len(__import__("sys").argv) == 1
+
+    if interactive:
+        print("=" * 38)
+        print("             AUTO CELAN")
+        print("=" * 38)
+        folder = input("\\nMasukkan path folder chapter:\\n> ").strip().strip('"')
+        if not folder:
+            raise SystemExit("Path folder tidak boleh kosong.")
+
+        raw_workers = input(f"\\nJumlah workers [{DEFAULT_WORKERS}]: ").strip()
+        try:
+            workers = positive_int(raw_workers) if raw_workers else DEFAULT_WORKERS
+        except argparse.ArgumentTypeError as exc:
+            raise SystemExit(str(exc)) from exc
+
+        args = argparse.Namespace(folder=folder, workers=workers, output=str(DEFAULT_OUTPUT))
+    else:
+        args = parse_args(argv)
+
     input_dir = Path(args.folder).expanduser().resolve()
     output_root = Path(args.output).expanduser().resolve()
 
-    print("=== Auto Celan — Local Mode ===")
+    print("\\n=== Auto Celan — Local Mode ===")
     try:
         asyncio.run(run_local(input_dir, output_root, args.workers))
     except (FileNotFoundError, NotADirectoryError) as exc:
