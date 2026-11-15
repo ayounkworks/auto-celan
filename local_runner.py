@@ -140,16 +140,11 @@ def main(argv=None):
         print("=" * 38)
         print("             AUTO CELAN")
         print("=" * 38)
-        folder = input("\nMasukkan path folder chapter:\n> ").strip().strip('"')
+        folder = input("\nMasukkan path folder chapter:\n> ").strip().strip('"').strip("'")
         if not folder:
             raise SystemExit("Path folder tidak boleh kosong.")
 
-        raw_workers = input(f"\nJumlah workers [{DEFAULT_WORKERS}]: ").strip()
-        try:
-            workers = positive_int(raw_workers) if raw_workers else DEFAULT_WORKERS
-        except argparse.ArgumentTypeError as exc:
-            raise SystemExit(str(exc)) from exc
-
+        workers = DEFAULT_WORKERS
         args = argparse.Namespace(folder=folder, workers=workers, output=str(DEFAULT_OUTPUT))
     else:
         args = parse_args(argv)
