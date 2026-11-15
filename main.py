@@ -20,6 +20,10 @@ if __name__ == "__main__":
         sys.exit(0)
     elif command == "api":
         sys.argv = [sys.argv[0]]
+    else:
+        from local_runner import main as local_main
+        local_main()
+        sys.exit(0)
 
 # ── Server Mode ───────────────────────────────────────────
 import asyncio
