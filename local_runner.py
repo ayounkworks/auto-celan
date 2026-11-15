@@ -1,103 +1,144 @@
 # ============================================================
 # local_runner.py
-# Mode lokal: python main.py local
-#
-# Flow: baca dari input/ → kirim ke RunPod (YOLO+LaMa) → simpan ke output/
-# Tidak ada YOLO di sini — semua di RunPod
+# Mode lokal: python main.py "<folder chapter>" [--workers N]
 # ============================================================
 
+import argparse
 import asyncio
-import os
+import re
 import traceback
 import socket
 from datetime import datetime
+from pathlib import Path
 
 import aiohttp
 from PIL import Image
 
 from core.config import MAX_WIDTH
-from core.image_processing import to_bytes
 import core.runpod_client as runpod_module
 from core.runpod_client import run_runpod_lama
 
-FOLDER_TARGET = os.path.join(os.path.dirname(__file__), "input")
-FOLDER_OUTPUT = os.path.join(os.path.dirname(__file__), "output")
+PROJECT_DIR = Path(__file__).resolve().parent
+DEFAULT_INPUT = PROJECT_DIR / "input"
+DEFAULT_OUTPUT = PROJECT_DIR / "output"
+VALID_EXT = {".jpg", ".jpeg", ".png", ".webp"}
+DEFAULT_WORKERS = 10
+TIMEOUT = 180
 
-VALID_EXT   = (".jpg", ".jpeg", ".png", ".webp")
-CONCURRENCY = 3
-TIMEOUT     = 180
+
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("workers harus berupa angka bulat.")
+    if parsed < 1 or parsed > 64:
+        raise argparse.ArgumentTypeError("workers harus berada di rentang 1–64.")
+    return parsed
 
 
-async def process_one(filename, sem, http_session, output_dir):
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="autoclean",
+        description="Bersihkan semua gambar dalam folder chapter menggunakan Auto Celan.",
+    )
+    parser.add_argument(
+        "folder", nargs="?", default=str(DEFAULT_INPUT),
+        help="Folder chapter berisi gambar. Default: folder input/ proyek.",
+    )
+    parser.add_argument(
+        "-w", "--workers", type=positive_int, default=DEFAULT_WORKERS,
+        help=f"Jumlah gambar yang diproses bersamaan (default: {DEFAULT_WORKERS}, maksimum: 64).",
+    )
+    parser.add_argument(
+        "-o", "--output", default=str(DEFAULT_OUTPUT),
+        help="Folder induk output (default: output/ proyek).",
+    )
+    return parser.parse_args(argv)
+
+
+async def process_one(img_path: Path, sem, http_session, output_dir: Path):
     async with sem:
         try:
-            print(f"[START] {filename}")
-            img_path = os.path.join(FOLDER_TARGET, filename)
+            print(f"[START] {img_path.name}")
+            with Image.open(img_path) as source:
+                img = source.convert("RGB")
 
-            img = Image.open(img_path).convert("RGB")
             if img.width > MAX_WIDTH:
                 ratio = MAX_WIDTH / img.width
-                img   = img.resize(
-                    (MAX_WIDTH, int(img.height * ratio)), Image.Resampling.LANCZOS
+                img = img.resize(
+                    (MAX_WIDTH, int(img.height * ratio)),
+                    Image.Resampling.LANCZOS,
                 )
 
-            # Kirim ke RunPod — YOLO detect + LaMa inpaint sekalian di sana
             try:
                 result = await asyncio.wait_for(
-                    run_runpod_lama(img, None, label=filename, http_session=http_session),
+                    run_runpod_lama(img, None, label=img_path.name, http_session=http_session),
                     timeout=TIMEOUT,
                 )
             except asyncio.TimeoutError:
-                print(f"[TIMEOUT] {filename}, skip")
-                img.save(os.path.join(output_dir, filename), quality=95)
+                print(f"[TIMEOUT] {img_path.name}, menyimpan gambar asli sebagai fallback.")
+                img.save(output_dir / img_path.name, quality=95)
                 return
 
             if result is None:
-                print(f"[FAILED] RunPod return None untuk {filename}, simpan original")
-                img.save(os.path.join(output_dir, filename), quality=95)
+                print(f"[FAILED] RunPod mengembalikan None untuk {img_path.name}; menyimpan gambar asli.")
+                img.save(output_dir / img_path.name, quality=95)
                 return
 
-            out_path = os.path.join(output_dir, filename)
-            result.save(out_path, quality=95)
-            print(f"✅ Selesai → {out_path}")
+            result.save(output_dir / img_path.name, quality=95)
+            print(f"[OK] {img_path.name}")
 
-        except Exception as e:
-            print(f"❌ Error {filename}: {e}")
+        except Exception as exc:
+            print(f"[ERROR] {img_path.name}: {exc}")
             traceback.print_exc()
 
 
-async def run_local():
-    os.makedirs(FOLDER_OUTPUT, exist_ok=True)
+async def run_local(input_dir: Path, output_root: Path, workers: int):
+    if not input_dir.exists():
+        raise FileNotFoundError(f"Folder input tidak ditemukan: {input_dir}")
+    if not input_dir.is_dir():
+        raise NotADirectoryError(f"Path bukan folder: {input_dir}")
 
-    files = [f for f in os.listdir(FOLDER_TARGET) if f.lower().endswith(VALID_EXT)]
+    files = sorted(
+        p for p in input_dir.iterdir()
+        if p.is_file() and p.suffix.lower() in VALID_EXT
+    )
     if not files:
-        print("❌ Tidak ada gambar di folder input/")
+        print(f"Tidak ada gambar (.jpg, .jpeg, .png, .webp) di: {input_dir}")
         return
 
-    timeout   = aiohttp.ClientTimeout(total=300, connect=20, sock_read=300)
-    connector = aiohttp.TCPConnector(limit=10, ttl_dns_cache=300, family=socket.AF_INET)
+    output_root.mkdir(parents=True, exist_ok=True)
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", input_dir.name).strip("._") or "chapter"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    job_output = output_root / f"{safe_name}_{timestamp}"
+    job_output.mkdir(parents=True, exist_ok=False)
 
-    ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
-    job_output = os.path.join(FOLDER_OUTPUT, f"run_{ts}")
-    os.makedirs(job_output, exist_ok=True)
+    timeout = aiohttp.ClientTimeout(total=300, connect=20, sock_read=300)
+    connector = aiohttp.TCPConnector(limit=max(workers, 10), ttl_dns_cache=300, family=socket.AF_INET)
 
-    print(f"Input  : {FOLDER_TARGET}")
-    print(f"Output : {job_output}")
-    print(f"Files  : {len(files)}\n")
+    print(f"Input   : {input_dir}")
+    print(f"Output  : {job_output}")
+    print(f"Images  : {len(files)}")
+    print(f"Workers : {workers}\n")
 
-    runpod_module.runpod_sem = asyncio.Semaphore(CONCURRENCY)
+    runpod_module.runpod_sem = asyncio.Semaphore(workers)
+    semaphore = asyncio.Semaphore(workers)
 
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as http_session:
-        sem   = asyncio.Semaphore(CONCURRENCY)
-        tasks = [
-            process_one(f, sem, http_session, job_output)
-            for f in sorted(files)
-        ]
+        tasks = [process_one(path, semaphore, http_session, job_output) for path in files]
         await asyncio.gather(*tasks)
 
-    print("\n=== SEMUA SELESAI ===")
+    print("\n=== PROSES SELESAI ===")
+    print(f"Hasil tersimpan di: {job_output}")
 
 
-def main():
-    print("=== Mode Lokal ===")
-    asyncio.run(run_local())
+def main(argv=None):
+    args = parse_args(argv)
+    input_dir = Path(args.folder).expanduser().resolve()
+    output_root = Path(args.output).expanduser().resolve()
+
+    print("=== Auto Celan — Local Mode ===")
+    try:
+        asyncio.run(run_local(input_dir, output_root, args.workers))
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        raise SystemExit(f"Error: {exc}") from exc
