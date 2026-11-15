@@ -8,11 +8,15 @@
 import sys
 import os
 
-# Any CLI argument selects local mode; no arguments starts the API server.
-if len(sys.argv) > 1:
-    from local_runner import main as local_main
-    local_main()
-    sys.exit(0)
+# Direct execution defaults to interactive local mode.
+# Use "python main.py server" to explicitly start the FastAPI server.
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1].lower() == "server":
+        sys.argv = [sys.argv[0]]
+    else:
+        from local_runner import main as local_main
+        local_main()
+        sys.exit(0)
 
 # ── Server Mode ───────────────────────────────────────────
 import asyncio
