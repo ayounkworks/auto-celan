@@ -5,6 +5,12 @@
 Auto Celan dapat memproses folder chapter secara langsung. Tidak perlu menyalin gambar ke folder `input/`.
 
 ```powershell
+# Mode interaktif: masukkan path chapter, workers otomatis 10
+python main.py
+
+# Alias interaktif yang diminta
+python main.py server
+
 # Folder chapter langsung, default 10 workers
 python main.py "C:\Komik\Chapter 0067"
 
@@ -14,15 +20,15 @@ python main.py "C:\Komik\Chapter 0067" -w 10
 # Tentukan folder output
 python main.py "C:\Komik\Chapter 0067" -w 10 -o "D:\AutoCelan\Output"
 
-# Server mode
-python main.py server
+# FastAPI API server
+python main.py api
 ```
 
 Default output adalah `output/` di dalam repository. Setiap proses membuat subfolder unik dengan nama chapter dan timestamp.
 
 ### Perintah singkat Windows PowerShell
 
-Mode interaktif adalah cara utama. Jalankan `python main.py`, masukkan folder chapter, lalu tekan Enter untuk memakai 10 workers. Untuk menjalankan langsung dengan argumen, gunakan contoh di atas.
+Mode interaktif adalah cara utama. Jalankan `python main.py` atau `python main.py server`, lalu masukkan path folder chapter. Workers otomatis memakai 10; tidak ada prompt workers. Untuk menjalankan langsung dengan argumen, gunakan contoh di atas.
 
 Agar bisa memakai perintah `ac` tanpa menulis `python main.py`:
 
@@ -51,10 +57,12 @@ Gunakan tanda kutip untuk folder yang memiliki spasi, tanda kurung, atau karakte
 
 Workers mengatur concurrency di proses lokal. Kapasitas aktual tetap dibatasi kapasitas endpoint/worker RunPod.
 
-## Server Mode
+## FastAPI Mode
+
+Mode ini tetap tersedia untuk integrasi API, bukan untuk memproses folder lokal secara interaktif.
 
 ```bash
-python main.py server
+python main.py api
 # atau
 uvicorn main:app --host 0.0.0.0 --port 8080
 ```
