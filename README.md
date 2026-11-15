@@ -14,13 +14,15 @@ python main.py "C:\Komik\Chapter 0067" -w 10
 # Tentukan folder output
 python main.py "C:\Komik\Chapter 0067" -w 10 -o "D:\AutoCelan\Output"
 
-# Mode kompatibilitas lama: membaca folder input/
-python main.py local
+# Server mode
+python main.py server
 ```
 
 Default output adalah `output/` di dalam repository. Setiap proses membuat subfolder unik dengan nama chapter dan timestamp.
 
 ### Perintah singkat Windows PowerShell
+
+Mode interaktif adalah cara utama. Jalankan `python main.py`, masukkan folder chapter, lalu tekan Enter untuk memakai 10 workers. Untuk menjalankan langsung dengan argumen, gunakan contoh di atas.
 
 Agar bisa memakai perintah `ac` tanpa menulis `python main.py`:
 
@@ -52,7 +54,7 @@ Workers mengatur concurrency di proses lokal. Kapasitas aktual tetap dibatasi ka
 ## Server Mode
 
 ```bash
-python main.py
+python main.py server
 # atau
 uvicorn main:app --host 0.0.0.0 --port 8080
 ```
