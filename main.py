@@ -1,22 +1,25 @@
 # ============================================================
 # main.py — Auto Celan entry point
-# Local: python main.py "<chapter-folder>" --workers 10
-# Legacy local mode: python main.py local
-# Server: python main.py
+# Interactive local: python main.py
+# Interactive local (alias): python main.py server
+# Direct local: python main.py "<chapter-folder>" --workers 10
+# FastAPI: python main.py api
 # ============================================================
 
 import sys
 import os
 
 # Direct execution defaults to interactive local mode.
-# Use "python main.py server" to explicitly start the FastAPI server.
+# "server" is an interactive alias; "api" starts the FastAPI service.
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1].lower() == "server":
+    command = sys.argv[1].lower() if len(sys.argv) > 1 else ""
+    if command in {"", "server"}:
         sys.argv = [sys.argv[0]]
-    else:
         from local_runner import main as local_main
         local_main()
         sys.exit(0)
+    elif command == "api":
+        sys.argv = [sys.argv[0]]
 
 # ── Server Mode ───────────────────────────────────────────
 import asyncio
@@ -65,7 +68,7 @@ async def lifespan(app: FastAPI):
     del_task.cancel()
 
 
-app = FastAPI(title="Manga Text Removal API")
+app = FastAPI(title="Manga Text Removal API", lifespan=lifespan)
 API_ACCESS_KEY = os.getenv("AUTO_CELAN_API_KEY")
 
 
