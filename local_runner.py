@@ -140,11 +140,11 @@ def main(argv=None):
         print("=" * 38)
         print("             AUTO CELAN")
         print("=" * 38)
-        folder = input("\\nMasukkan path folder chapter:\\n> ").strip().strip('"')
+        folder = input("\nMasukkan path folder chapter:\n> ").strip().strip('"')
         if not folder:
             raise SystemExit("Path folder tidak boleh kosong.")
 
-        raw_workers = input(f"\\nJumlah workers [{DEFAULT_WORKERS}]: ").strip()
+        raw_workers = input(f"\nJumlah workers [{DEFAULT_WORKERS}]: ").strip()
         try:
             workers = positive_int(raw_workers) if raw_workers else DEFAULT_WORKERS
         except argparse.ArgumentTypeError as exc:
@@ -157,7 +157,7 @@ def main(argv=None):
     input_dir = Path(args.folder).expanduser().resolve()
     output_root = Path(args.output).expanduser().resolve()
 
-    print("\\n=== Auto Celan — Local Mode ===")
+    print("\n=== Auto Celan — Local Mode ===")
     try:
         asyncio.run(run_local(input_dir, output_root, args.workers))
     except (FileNotFoundError, NotADirectoryError) as exc:
